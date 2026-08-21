@@ -1,6 +1,6 @@
 # Repo City
 
-**Paste a GitHub URL and walk through the codebase as a 3D city.**
+**Paste a GitHub URL and walk through the codebase as a 3D city**
 
 Every folder becomes a district, every file becomes a building, and an AI agent
 writes the tour: a project briefing at the city gate, a label when you point at
