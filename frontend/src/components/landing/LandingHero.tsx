@@ -1,7 +1,8 @@
 import { ArrowRight } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useRef, useState, type CSSProperties } from 'react'
 
 import { gsap, useGSAP } from '../../lib/gsapSetup'
+import { Mascot } from './Mascot'
 import { LandingScene } from './LandingScene'
 
 interface Props {
@@ -16,9 +17,12 @@ const EXAMPLES = [
   { slug: 'anthropics/anthropic-sdk-python', note: 'the SDK this app runs on' },
 ]
 
+const SPARKS = ['landing__cta-spark--1', 'landing__cta-spark--2', 'landing__cta-spark--3', 'landing__cta-spark--4']
+
 export function LandingHero({ onAnalyze, error }: Props) {
   const [url, setUrl] = useState('')
   const scope = useRef<HTMLDivElement>(null)
+  const squiggle = useRef<SVGPathElement>(null)
 
   useGSAP(
     () => {
@@ -28,12 +32,43 @@ export function LandingHero({ onAnalyze, error }: Props) {
       })
       tl.from('.landing__eyebrow', { y: 14, opacity: 0 })
         .from('.landing__title-line', { y: 34, opacity: 0, stagger: 0.09 }, '-=0.65')
+        .from('.mascot--hero', { scale: 0, rotate: -20, opacity: 0, ease: 'back.out(2.4)' }, '-=0.5')
         .from('.landing__lede', { y: 18, opacity: 0 }, '-=0.55')
         .from('.landing__form', { y: 18, opacity: 0 }, '-=0.5')
         .from('.landing__examples .pill', { y: 10, opacity: 0, stagger: 0.05 }, '-=0.4')
+
+      // No DrawSVG plugin (that's a paid GSAP Club add-on) — the "hand-drawn"
+      // reveal is done the plain way: measure the path, animate its offset.
+      if (squiggle.current) {
+        const length = squiggle.current.getTotalLength()
+        gsap.set(squiggle.current, { strokeDasharray: length, strokeDashoffset: reduced ? 0 : length })
+        if (!reduced) {
+          tl.to(squiggle.current, { strokeDashoffset: 0, duration: 0.7, ease: 'power2.out' }, '-=0.35')
+        }
+      }
     },
     { scope },
   )
+
+  const sparkBurst = () => {
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduced) return
+    gsap.fromTo(
+      '.landing__cta-spark',
+      { opacity: 0, scale: 0, rotate: 0 },
+      {
+        opacity: 1,
+        scale: 1,
+        rotate: 20,
+        duration: 0.32,
+        stagger: 0.05,
+        ease: 'back.out(3)',
+        yoyo: true,
+        repeat: 1,
+        repeatDelay: 0.2,
+      },
+    )
+  }
 
   return (
     <section className="landing__hero" ref={scope}>
@@ -42,10 +77,13 @@ export function LandingHero({ onAnalyze, error }: Props) {
         {Array.from({ length: 26 }).map((_, index) => (
           <span
             key={index}
-            style={{
-              height: `${18 + ((index * 37) % 62)}%`,
-              animationDelay: `${index * 0.06}s`,
-            }}
+            style={
+              {
+                height: `${18 + ((index * 37) % 62)}%`,
+                animationDelay: `${index * 0.06}s`,
+                '--i': index,
+              } as CSSProperties
+            }
           />
         ))}
       </div>
@@ -54,7 +92,20 @@ export function LandingHero({ onAnalyze, error }: Props) {
         <p className="landing__eyebrow">Repo City</p>
         <h1 className="landing__title">
           <span className="landing__title-line">Walk through any codebase</span>
-          <span className="landing__title-line landing__title-line--accent">as a city.</span>
+          <span className="landing__title-line landing__title-line--accent">
+            as a city.
+            <Mascot size={64} pose="wave" followCursor className="mascot--hero" />
+            <svg className="landing__squiggle" viewBox="0 0 260 24" aria-hidden="true">
+              <path
+                ref={squiggle}
+                d="M4 14 Q 30 2, 56 13 T 108 13 T 160 13 T 212 11 T 256 15"
+                fill="none"
+                stroke="#ffc93c"
+                strokeWidth="7"
+                strokeLinecap="round"
+              />
+            </svg>
+          </span>
         </h1>
         <p className="landing__lede">
           Paste a GitHub URL. An agent reads the repository, writes a briefing for the
@@ -76,10 +127,17 @@ export function LandingHero({ onAnalyze, error }: Props) {
             spellCheck={false}
             autoFocus
           />
-          <button className="button button--primary" type="submit" disabled={!url.trim()}>
-            Build the city
-            <ArrowRight size={16} strokeWidth={2.4} />
-          </button>
+          <span className="landing__cta-wrap" onMouseEnter={sparkBurst}>
+            {SPARKS.map((cls) => (
+              <svg key={cls} className={`landing__cta-spark ${cls}`} viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M10 0 L12 8 L20 10 L12 12 L10 20 L8 12 L0 10 L8 8 Z" fill="#ffc93c" />
+              </svg>
+            ))}
+            <button className="button button--primary landing__cta" type="submit" disabled={!url.trim()}>
+              Build the city
+              <ArrowRight size={16} strokeWidth={2.4} />
+            </button>
+          </span>
         </form>
 
         {error && <div className="notice notice--error">{error}</div>}

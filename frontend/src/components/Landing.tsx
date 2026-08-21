@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 
 import { api, type Health } from '../lib/api'
 import type { RecentCity } from '../types'
+import { LandingCompare } from './landing/LandingCompare'
 import { LandingFeatures } from './landing/LandingFeatures'
 import { LandingHero } from './landing/LandingHero'
+import { LandingMascotIntro } from './landing/LandingMascotIntro'
 import { LandingRecent } from './landing/LandingRecent'
 import { LandingStatus } from './landing/LandingStatus'
 import { LandingSteps } from './landing/LandingSteps'
@@ -26,7 +28,9 @@ export function Landing({ onAnalyze, onOpenCached, error }: Props) {
   return (
     <div className="landing">
       <LandingHero onAnalyze={onAnalyze} error={error} />
+      <LandingMascotIntro />
       <LandingSteps />
+      <LandingCompare />
       <LandingFeatures />
       <LandingRecent recent={recent} onOpenCached={onOpenCached} />
       <div className="landing__foot">
