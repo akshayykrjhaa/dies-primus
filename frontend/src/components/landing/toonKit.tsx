@@ -7,6 +7,9 @@ import * as THREE from 'three'
  * illustrated world instead of two different one-off scenes.
  */
 
+/** The two atmospheres the landing page can be toggled between. */
+export type Mood = 'day' | 'night'
+
 export const PALETTE = ['#ff5d73', '#ffc93c', '#ff8fd8', '#3fe0c5', '#8c6bff']
 // A muted, darkened tone per palette color for the flat building "body" —
 // deliberately not ink-black, so a black outline shell reads as a border

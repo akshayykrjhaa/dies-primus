@@ -1,6 +1,7 @@
 import { useRef, type MouseEvent, type PointerEvent } from 'react'
 
 import { gsap, useGSAP } from '../../lib/gsapSetup'
+import type { Mood } from './toonKit'
 
 const TREE_LINES = [
   { text: 'src/', depth: 0 },
@@ -118,7 +119,7 @@ function Roof({ building }: { building: CityBuilding }) {
   return <rect x={cx - 3.5} y={topY - 5} width={7} height={5} fill="#12101f" opacity={0.18} />
 }
 
-export function LandingCompare() {
+export function LandingCompare({ mood }: { mood: Mood }) {
   const scope = useRef<HTMLDivElement>(null)
   const nearLayer = useRef<SVGGElement>(null)
   const farLayer = useRef<SVGGElement>(null)
@@ -234,10 +235,36 @@ export function LandingCompare() {
                   <line x1="182" y1="20" x2="150" y2="24" stroke="#12101f" strokeWidth="2" />
                   <line x1="168" y1="22" x2="168" y2="34" stroke="#12101f" strokeWidth="2" />
                 </g>
-                <circle cx="172" cy="20" r="12" fill="#fff2e0" stroke="#12101f" strokeWidth="2.6" />
-                <circle cx="172" cy="20" r="18" fill="#fff2e0" opacity="0.18" />
-                <circle cx="176" cy="17" r="1.6" fill="#e6d2aa" opacity="0.7" />
-                <circle cx="169" cy="24" r="1.1" fill="#e6d2aa" opacity="0.7" />
+                {mood === 'day' ? (
+                  <>
+                    <circle cx="172" cy="20" r="20" fill="#ffc93c" opacity="0.16" />
+                    {Array.from({ length: 8 }).map((_, i) => {
+                      const a = (i / 8) * Math.PI * 2
+                      const r1 = 13
+                      const r2 = 18
+                      return (
+                        <line
+                          key={i}
+                          x1={172 + Math.cos(a) * r1}
+                          y1={20 + Math.sin(a) * r1}
+                          x2={172 + Math.cos(a) * r2}
+                          y2={20 + Math.sin(a) * r2}
+                          stroke="#ffc93c"
+                          strokeWidth="2.4"
+                          strokeLinecap="round"
+                        />
+                      )
+                    })}
+                    <circle cx="172" cy="20" r="11" fill="#ffe08a" stroke="#12101f" strokeWidth="2.6" />
+                  </>
+                ) : (
+                  <>
+                    <circle cx="172" cy="20" r="12" fill="#fff2e0" stroke="#12101f" strokeWidth="2.6" />
+                    <circle cx="172" cy="20" r="18" fill="#fff2e0" opacity="0.18" />
+                    <circle cx="176" cy="17" r="1.6" fill="#e6d2aa" opacity="0.7" />
+                    <circle cx="169" cy="24" r="1.1" fill="#e6d2aa" opacity="0.7" />
+                  </>
+                )}
               </g>
 
               <g ref={nearLayer}>

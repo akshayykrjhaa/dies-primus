@@ -4,10 +4,12 @@ import { useRef, useState, type CSSProperties } from 'react'
 import { gsap, useGSAP } from '../../lib/gsapSetup'
 import { Mascot } from './Mascot'
 import { LandingScene } from './LandingScene'
+import type { Mood } from './toonKit'
 
 interface Props {
   onAnalyze: (repoUrl: string, force: boolean) => void
   error: string | null
+  mood: Mood
 }
 
 const EXAMPLES = [
@@ -19,7 +21,7 @@ const EXAMPLES = [
 
 const SPARKS = ['landing__cta-spark--1', 'landing__cta-spark--2', 'landing__cta-spark--3', 'landing__cta-spark--4']
 
-export function LandingHero({ onAnalyze, error }: Props) {
+export function LandingHero({ onAnalyze, error, mood }: Props) {
   const [url, setUrl] = useState('')
   const scope = useRef<HTMLDivElement>(null)
   const squiggle = useRef<SVGPathElement>(null)
@@ -72,7 +74,7 @@ export function LandingHero({ onAnalyze, error }: Props) {
 
   return (
     <section className="landing__hero" ref={scope}>
-      <LandingScene />
+      <LandingScene mood={mood} />
       <div className="landing__skyline" aria-hidden="true">
         {Array.from({ length: 26 }).map((_, index) => (
           <span
