@@ -275,7 +275,8 @@ code {
 
 .landing__hero {
   position: relative;
-  min-height: 96vh;
+  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   overflow: hidden;
