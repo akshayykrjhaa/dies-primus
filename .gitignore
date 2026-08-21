@@ -6,6 +6,8 @@ __pycache__/
 # Secrets — never commit real keys
 backend/.env
 .env
+myenv
+
 
 # Analysis cache (regenerated on demand)
 backend/.cache/
