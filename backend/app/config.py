@@ -19,10 +19,12 @@ def _int(name: str, default: int) -> int:
 
 
 def _default_provider() -> str:
-    """Whichever key is present wins; Groq first because it is the faster demo."""
+    """Whichever key is present wins; Gemini first (generous free tier)."""
     explicit = (os.getenv("LLM_PROVIDER") or "").strip().lower()
-    if explicit in {"groq", "anthropic"}:
+    if explicit in {"groq", "anthropic", "gemini"}:
         return explicit
+    if os.getenv("GEMINI_API_KEY"):
+        return "gemini"
     if os.getenv("GROQ_API_KEY"):
         return "groq"
     return "anthropic"
@@ -35,6 +37,7 @@ class Settings:
     provider: str = field(default_factory=_default_provider)
     groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     github_token: str = field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
 
     # Point an SDK somewhere else (a gateway, or tests/mock_anthropic.py).
@@ -57,6 +60,9 @@ class Settings:
     )
     anthropic_model: str = field(
         default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-5")
+    )
+    gemini_model: str = field(
+        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
     )
 
     # Effort trades depth for latency. "medium" keeps a live demo snappy;
@@ -111,7 +117,7 @@ class Settings:
 
     @property
     def max_concurrency(self) -> int:
-        return self._max_concurrency or (3 if self.provider == "groq" else 6)
+        return self._max_concurrency or (3 if self.provider == "groq" else 8)
 
     @property
     def file_char_budget(self) -> int:
@@ -119,11 +125,19 @@ class Settings:
 
     @property
     def api_key(self) -> str:
-        return self.groq_api_key if self.provider == "groq" else self.anthropic_api_key
+        if self.provider == "groq":
+            return self.groq_api_key
+        if self.provider == "gemini":
+            return self.gemini_api_key
+        return self.anthropic_api_key
 
     @property
     def model(self) -> str:
-        return self.groq_model if self.provider == "groq" else self.anthropic_model
+        if self.provider == "groq":
+            return self.groq_model
+        if self.provider == "gemini":
+            return self.gemini_model
+        return self.anthropic_model
 
     @property
     def has_llm(self) -> bool:

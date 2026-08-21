@@ -344,13 +344,13 @@ def heuristic_file(info: FileInfo) -> dict[str, Any]:
         "headline": f"{detected.language} file in {where}",
         "summary": (
             f"A {detected.language} file ({info.size:,} bytes) living in {where}. "
-            "Add GROQ_API_KEY to backend/.env for a real explanation."
+            "Add GEMINI_API_KEY to backend/.env for a real explanation."
         ),
         "detail": (
             f"{info.name} sits in {where} and looks like a {role.replace('-', ' ')} "
             f"file based on its name, location and extension. This description is "
             f"structural only -- the AI narrator is offline because no model "
-            f"API key is configured."
+            f"API key is configured. Add GEMINI_API_KEY to backend/.env."
         ),
         "role": role,
         "tags": [detected.language, role],
@@ -381,7 +381,7 @@ def heuristic_project(
         "overview": (
             f"{slug} -- {description} "
             + (first_para or "")
-            + " (Structural preview: add GROQ_API_KEY to backend/.env to have "
+            + " (Structural preview: add GEMINI_API_KEY to backend/.env to have "
               "the model write the full briefing.)"
         ),
         "architecture": (

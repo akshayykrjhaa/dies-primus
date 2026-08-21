@@ -336,6 +336,111 @@ class AnthropicLLM(LLM):
             raise RuntimeError(str(exc)) from exc
 
 
+# Keys that are valid JSON Schema but rejected by the Gemini API.
+_GEMINI_UNSUPPORTED = frozenset({"additionalProperties", "$schema", "$id", "$defs"})
+
+
+def _gemini_schema(schema: Any) -> Any:
+    """Recursively strip JSON Schema keys that Gemini's API does not accept."""
+    if isinstance(schema, dict):
+        return {
+            k: _gemini_schema(v)
+            for k, v in schema.items()
+            if k not in _GEMINI_UNSUPPORTED
+        }
+    if isinstance(schema, list):
+        return [_gemini_schema(item) for item in schema]
+    return schema
+
+
+class GeminiLLM(LLM):
+    """Google Gemini via the google-genai SDK.
+
+    The free tier allows 1,000,000 tokens/minute -- effectively unlimited for
+    this workload, so there is no TokenBudget here. All file batches fire
+    concurrently up to settings.max_concurrency.
+    """
+
+    provider = "gemini"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.model = settings.gemini_model
+        from google import genai
+
+        self._client = (
+            genai.Client(api_key=settings.gemini_api_key) if self.enabled else None
+        )
+
+    async def structured(
+        self,
+        system: str,
+        prompt: str,
+        schema: dict[str, Any],
+        name: str,
+        effort: str,
+        kind: str = "files",
+    ) -> dict[str, Any] | None:
+        from google.genai import types
+        from google.genai.errors import APIError
+
+        assert self._client is not None
+        full_prompt = f"{system}\n\n{prompt}"
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_gemini_schema(schema),
+            temperature=0.3,
+        )
+        for attempt in range(3):
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=self.model,
+                    contents=full_prompt,
+                    config=config,
+                )
+                break
+            except APIError as exc:
+                status = getattr(exc, "code", 0)
+                if status in (429, 503) and attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))
+                    continue
+                self._record_error(f"Gemini API error {status}: {str(exc)[:180]}")
+                return None
+            except Exception as exc:  # noqa: BLE001
+                self._record_error(f"Gemini error: {str(exc)[:180]}")
+                return None
+        else:
+            return None
+
+        self.calls += 1
+        usage = response.usage_metadata
+        if usage:
+            self.input_tokens += getattr(usage, "prompt_token_count", 0) or 0
+            self.output_tokens += getattr(usage, "candidates_token_count", 0) or 0
+
+        try:
+            return json.loads(response.text)
+        except (json.JSONDecodeError, ValueError):
+            self._record_error("Gemini returned malformed JSON for one request.")
+            return None
+
+    async def stream_text(self, system: str, prompt: str) -> AsyncIterator[str]:
+        from google.genai import types
+
+        assert self._client is not None
+        full_prompt = f"{system}\n\n{prompt}"
+        try:
+            async for chunk in await self._client.aio.models.generate_content_stream(
+                model=self.model,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(temperature=0.4),
+            ):
+                if chunk.text:
+                    yield chunk.text
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Gemini stream error: {exc}") from exc
+
+
 class DisabledLLM(LLM):
     """No key configured: the city still builds, descriptions stay structural."""
 
@@ -350,14 +455,16 @@ class DisabledLLM(LLM):
 
     async def stream_text(self, system: str, prompt: str) -> AsyncIterator[str]:
         yield (
-            "The tour guide needs an API key. Add GROQ_API_KEY (or "
-            "ANTHROPIC_API_KEY) to backend/.env and restart the server."
+            "The tour guide needs an API key. Add GEMINI_API_KEY (recommended), "
+            "GROQ_API_KEY, or ANTHROPIC_API_KEY to backend/.env and restart the server."
         )
 
 
 def make_llm() -> LLM:
     if not settings.has_llm:
         return DisabledLLM()
+    if settings.provider == "gemini":
+        return GeminiLLM()
     if settings.provider == "groq":
         return GroqLLM()
     return AnthropicLLM()
