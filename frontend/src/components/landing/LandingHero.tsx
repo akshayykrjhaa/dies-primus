@@ -1,5 +1,5 @@
 import { ArrowRight } from 'lucide-react'
-import { useRef, useState, type CSSProperties } from 'react'
+import { useRef, useState } from 'react'
 
 import { gsap, useGSAP } from '../../lib/gsapSetup'
 import { Mascot } from './Mascot'
@@ -75,20 +75,6 @@ export function LandingHero({ onAnalyze, error, mood }: Props) {
   return (
     <section className="landing__hero" ref={scope}>
       <LandingScene mood={mood} />
-      <div className="landing__skyline" aria-hidden="true">
-        {Array.from({ length: 26 }).map((_, index) => (
-          <span
-            key={index}
-            style={
-              {
-                height: `${18 + ((index * 37) % 62)}%`,
-                animationDelay: `${index * 0.06}s`,
-                '--i': index,
-              } as CSSProperties
-            }
-          />
-        ))}
-      </div>
 
       <div className="landing__hero-content">
         <p className="landing__eyebrow">Repo City</p>
