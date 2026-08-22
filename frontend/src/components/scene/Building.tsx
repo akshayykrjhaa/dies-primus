@@ -1,5 +1,5 @@
 import { useFrame } from '@react-three/fiber'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 
 import { letterTexture, logoTexture } from '../../lib/logos'
@@ -31,6 +31,7 @@ function LogoBadge({
   y,
   size,
   seed,
+  onReady,
 }: {
   slug: string
   label: string
@@ -38,6 +39,13 @@ function LogoBadge({
   y: number
   size: number
   seed: number
+  /**
+   * Fired once the badge's meshes exist. The badge waits on an async texture,
+   * so it mounts well after its building; without this the parent's material
+   * sweep had already run and the badge kept shining at full brightness over
+   * a faded building.
+   */
+  onReady: () => void
 }) {
   const group = useRef<THREE.Group>(null)
   const [texture, setTexture] = useState<THREE.Texture | null>(null)
@@ -51,6 +59,10 @@ function LogoBadge({
       alive = false
     }
   }, [slug, label, color])
+
+  useEffect(() => {
+    if (texture) onReady()
+  }, [texture, onReady])
 
   const phase = useMemo(() => (seed % 628) / 100, [seed])
 
@@ -78,37 +90,102 @@ function LogoBadge({
 }
 
 /**
- * The beam that rises off the building you clicked. Additive blending and a
- * cone that fades upward reads as light rather than as geometry.
+ * A soft, vertically-fading gradient. Painted once and shared: it is what
+ * turns the focus beam from a slab into a shaft of light.
+ */
+let beamTexture: THREE.CanvasTexture | null = null
+function beamGradient(): THREE.CanvasTexture {
+  if (beamTexture) return beamTexture
+  const canvas = document.createElement('canvas')
+  canvas.width = 4
+  canvas.height = 128
+  const ctx = canvas.getContext('2d')!
+  const gradient = ctx.createLinearGradient(0, 128, 0, 0)
+  gradient.addColorStop(0, 'rgba(255, 232, 150, 0.85)')
+  gradient.addColorStop(0.35, 'rgba(255, 220, 120, 0.32)')
+  gradient.addColorStop(1, 'rgba(255, 210, 100, 0)')
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, 4, 128)
+  beamTexture = new THREE.CanvasTexture(canvas)
+  beamTexture.colorSpace = THREE.SRGBColorSpace
+  return beamTexture
+}
+
+/** A radial falloff, for the pool of light the beam lands in. */
+let poolTexture: THREE.CanvasTexture | null = null
+function poolGradient(): THREE.CanvasTexture {
+  if (poolTexture) return poolTexture
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const ctx = canvas.getContext('2d')!
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
+  gradient.addColorStop(0, 'rgba(255, 226, 150, 0.9)')
+  gradient.addColorStop(0.55, 'rgba(255, 205, 90, 0.3)')
+  gradient.addColorStop(1, 'rgba(255, 195, 70, 0)')
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, 64, 64)
+  poolTexture = new THREE.CanvasTexture(canvas)
+  poolTexture.colorSpace = THREE.SRGBColorSpace
+  return poolTexture
+}
+
+/**
+ * The spotlight on the building you clicked.
+ *
+ * Three parts: a shaft of light rising off the roof, a pool of light on the
+ * ground it stands in, and a thin ring marking the plot.
+ *
+ * All three used to be flat colour. The shaft was a uniformly-opaque cylinder,
+ * which reads as a grey slab standing in the street rather than as light, and
+ * the ground marker was an opaque yellow annulus that turned olive wherever it
+ * crossed a lawn. Everything is additive now and carries a gradient, so it
+ * adds light to what is underneath instead of painting over it -- and the
+ * shaft fades out as it rises, which is what makes it look like a beam.
  */
 function FocusBeam({ height, width }: { height: number; width: number }) {
   const beam = useRef<THREE.Mesh>(null)
-  const halo = useRef<THREE.Mesh>(null)
+  const pool = useRef<THREE.Mesh>(null)
+  const ring = useRef<THREE.Mesh>(null)
   const shown = useRef(0)
 
   useFrame((state, delta) => {
     shown.current = Math.min(1, shown.current + delta * 2.6)
-    const pulse = 0.78 + Math.sin(state.clock.elapsedTime * 2.1) * 0.22
+    const pulse = 0.82 + Math.sin(state.clock.elapsedTime * 2.1) * 0.18
     if (beam.current) {
       const material = beam.current.material as THREE.MeshBasicMaterial
-      material.opacity = 0.24 * shown.current * pulse
+      material.opacity = 0.26 * shown.current * pulse
       beam.current.scale.setScalar(shown.current)
     }
-    if (halo.current) {
-      const material = halo.current.material as THREE.MeshBasicMaterial
-      material.opacity = 0.6 * shown.current * pulse
-      halo.current.rotation.z += delta * 0.5
+    if (pool.current) {
+      const material = pool.current.material as THREE.MeshBasicMaterial
+      material.opacity = 0.62 * shown.current * pulse
+    }
+    if (ring.current) {
+      const material = ring.current.material as THREE.MeshBasicMaterial
+      material.opacity = 0.34 * shown.current * pulse
+      ring.current.rotation.z += delta * 0.35
     }
   })
 
-  const beamHeight = height * 2 + 30
+  // A slim glow standing on the roof, not a column over the whole block.
+  //
+  // At `width * 0.5` and `height * 1.4 + 22` this was wider than the building
+  // and more than twice its height -- a nine-unit, fifty-unit-tall cylinder
+  // of additive light, drawn twice because it is double-sided. Close up that
+  // is a pale slab across half the frame, which is what it kept reading as.
+  // The ground pool and ring are the real marker; the shaft only has to say
+  // "up here".
+  const beamHeight = height * 0.5 + 9
+  const beamRadius = Math.max(0.55, width * 0.24)
 
   return (
     <group>
       <mesh ref={beam} position={[0, height + beamHeight / 2, 0]}>
-        <cylinderGeometry args={[width * 1.4, width * 0.7, beamHeight, 18, 1, true]} />
+        <cylinderGeometry args={[beamRadius * 1.9, beamRadius, beamHeight, 16, 1, true]} />
         <meshBasicMaterial
-          color="#FFE066"
+          map={beamGradient()}
+          color="#FFE9A0"
           transparent
           opacity={0}
           side={THREE.DoubleSide}
@@ -117,13 +194,30 @@ function FocusBeam({ height, width }: { height: number; width: number }) {
           toneMapped={false}
         />
       </mesh>
-      <mesh ref={halo} position={[0, LAYERS.focusHalo, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[width * 0.9, width * 1.3, 40]} />
+
+      {/* The pool of light it lands in. */}
+      <mesh ref={pool} position={[0, LAYERS.focusHalo, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[width * 4.2, width * 4.2]} />
+        <meshBasicMaterial
+          map={poolGradient()}
+          color="#FFD98A"
+          transparent
+          opacity={0}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </mesh>
+
+      {/* A thin turning ring, so the plot itself is marked. */}
+      <mesh ref={ring} position={[0, LAYERS.focusHalo, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[width * 1.15, width * 1.28, 48]} />
         <meshBasicMaterial
           color="#FFC93C"
           transparent
           opacity={0}
           depthWrite={false}
+          blending={THREE.AdditiveBlending}
           toneMapped={false}
         />
       </mesh>
@@ -163,11 +257,48 @@ function BuildingImpl({
   // each material decides how far back *it* goes, via `userData.dimTo`.
   const fade = useRef(1)
 
-  // Re-collected whenever the dim state changes rather than on a fixed set of
-  // props: the logo badge waits on an async texture and mounts late, so a list
-  // gathered once at mount missed it and the badge stayed bright over a faded
-  // building. `night` is deliberately not a dependency -- the window meshes no
-  // longer rebuild at dusk, so it never invalidated anything.
+  const [badgeReady, setBadgeReady] = useState(false)
+  const handleBadgeReady = useCallback(() => setBadgeReady(true), [])
+
+  /**
+   * Push the current fade into a set of materials.
+   *
+   * Shared by the per-frame easing and by the collection pass below, so a
+   * material can never be left holding a stale value: whichever runs last
+   * writes the same answer.
+   */
+  const applyFade = useCallback((list: THREE.Material[], value: number) => {
+    for (const material of list) {
+      const m = material as THREE.MeshLambertMaterial
+      // Walls fall back furthest; windows and lit panes hold on (they carry
+      // their own floor in userData -- see Archetypes.tsx). Fading every
+      // material to the same value is what made the windows and lights
+      // disappear the moment you focused a building.
+      const floor = (m.userData.dimTo as number | undefined) ?? DIM_FLOOR
+      const opacity = floor + (1 - floor) * value
+      m.opacity = opacity
+      m.transparent = opacity < 1
+      // Depth writing stays ON while faded. With it off, every mesh in the
+      // shell landed in the transparent pass sorted only by its own centre,
+      // so roof slabs, interior towers and double-sided pieces drew straight
+      // through the near wall -- worst on the largest buildings and worst
+      // again at night, when the lit panes shine through.
+      m.depthWrite = true
+      // Emissive surfaces ignore opacity as far as their own brightness goes,
+      // so a lit window stayed at full glow over a wall that had faded away
+      // beneath it. The window materials record the glow the time of day
+      // asked for; scale that by the same fade.
+      m.userData.dimFactor = opacity
+      const glow = m.userData.emissiveBase as number | undefined
+      if (glow !== undefined) m.emissiveIntensity = glow * opacity
+    }
+  }, [])
+
+  // Re-collected whenever the dim state changes *or* new meshes appear, and
+  // the current fade is pushed into them immediately rather than waiting for
+  // the easing loop -- which stops as soon as it reaches its target and would
+  // never touch a material that arrived afterwards. `night` is deliberately
+  // not a dependency: the window meshes no longer rebuild at dusk.
   useEffect(() => {
     const found: THREE.Material[] = []
     group.current?.traverse((child) => {
@@ -178,7 +309,8 @@ function BuildingImpl({
       }
     })
     materials.current = found
-  }, [building.id, detail, dimmed])
+    applyFade(found, fade.current)
+  }, [building.id, detail, dimmed, badgeReady, applyFade])
 
   useFrame((_, delta) => {
     const k = Math.min(1, delta * 8)
@@ -202,41 +334,7 @@ function BuildingImpl({
         Math.abs(fade.current - target) < 0.004
           ? target
           : fade.current + (target - fade.current) * k
-
-      for (const material of materials.current) {
-        const m = material as THREE.MeshLambertMaterial
-        // Walls fall back furthest; windows and lit panes hold on (they carry
-        // their own floor in userData -- see Archetypes.tsx). Fading every
-        // material to the same value is what made the windows and lights
-        // disappear the moment you focused a building: at the shell's floor
-        // the panes were multiplied down to nothing, so a dimmed building lost
-        // exactly the detail that identified it.
-        const floor = (m.userData.dimTo as number | undefined) ?? DIM_FLOOR
-        const value = floor + (1 - floor) * fade.current
-        m.opacity = value
-        m.transparent = value < 1
-
-        // Emissive surfaces ignore opacity as far as their own brightness is
-        // concerned, so a lit window stayed at full glow over a wall that had
-        // faded away beneath it. The window materials record the glow the time
-        // of day asked for; scale that by the same fade. `dimFactor` is left
-        // on the material so the day/night ramp can re-apply it when it next
-        // writes (see useLightRamp / Archetypes.tsx).
-        m.userData.dimFactor = value
-        const glow = m.userData.emissiveBase as number | undefined
-        if (glow !== undefined) m.emissiveIntensity = glow * value
-        // Depth writing stays ON while faded. This is the fix for dimmed
-        // buildings looking scrambled: with it off, every mesh in the shell --
-        // walls, roof, both window sets, pilasters -- landed in the
-        // transparent pass sorted only by its own centre, so roof slabs,
-        // interior towers and double-sided pieces drew straight through the
-        // near wall. It is worst on the largest buildings, where the distance
-        // between the two faces is greatest, and worst again at night when
-        // the lit panes shine through. Writing depth costs the ability to see
-        // one dimmed building through another and buys back correct occlusion
-        // inside each of them, from any angle.
-        m.depthWrite = true
-      }
+      applyFade(materials.current, fade.current)
     }
 
     if (marker.current) {
@@ -268,6 +366,7 @@ function BuildingImpl({
 
       {/* Every building wears the logo of the tech it belongs to. */}
       <LogoBadge
+        onReady={handleBadgeReady}
         slug={building.iconSlug}
         label={building.ext.replace('.', '') || building.language}
         color={building.languageColor}

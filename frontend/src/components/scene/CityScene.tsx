@@ -306,6 +306,7 @@ function DaylightRig({ sky, sun, hemi }: {
 const MOON_ELEVATION = 0.17
 
 function Moon({ sky, span }: { sky: Daylight; span: number }) {
+  const camera = useThree((state) => state.camera)
   const group = useRef<THREE.Group>(null)
   const disc = useRef<THREE.MeshBasicMaterial>(null)
   const halo = useRef<THREE.MeshBasicMaterial>(null)
@@ -325,17 +326,25 @@ function Moon({ sky, span }: { sky: Daylight; span: number }) {
       // every building black), but the establishing shot looks slightly down,
       // so a disc placed at the light's own elevation sits above the frame
       // and is never seen. Low and far puts it over the range at the back.
+      //
+      // Positioned relative to the *camera*, like the celestial body it is
+      // pretending to be. Anchored to the world it sat at a fixed point, so
+      // orbiting to the far side of the valley pushed it past the far plane
+      // and it vanished mid-pan -- and its elevation drifted as you moved.
+      // Camera-relative, it holds the same place in the sky from everywhere,
+      // and can never be clipped.
       const bearing = Math.atan2(sky.moon.x, sky.moon.z)
-      const flat = Math.cos(MOON_ELEVATION) * span * 4.2
+      const distance = span * 3.6
+      const flat = Math.cos(MOON_ELEVATION) * distance
       group.current.position.set(
-        Math.sin(bearing) * flat,
-        Math.sin(MOON_ELEVATION) * span * 4.2,
-        Math.cos(bearing) * flat,
+        camera.position.x + Math.sin(bearing) * flat,
+        camera.position.y + Math.sin(MOON_ELEVATION) * distance,
+        camera.position.z + Math.cos(bearing) * flat,
       )
     }
   })
 
-  const size = span * 0.16
+  const size = span * 0.14
 
   return (
     <group ref={group}>

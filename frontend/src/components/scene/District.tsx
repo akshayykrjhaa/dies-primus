@@ -14,6 +14,17 @@ interface Props {
   onFocus: (district: District) => void
 }
 
+/** Thickness of the active district's outline, in world units. */
+const OUTLINE_WIDTH = 1.1
+
+/** The four sides of the outline: [signX, signZ, spansWidth, spansDepth]. */
+const OUTLINE: Array<[number, number, boolean, boolean]> = [
+  [0, -1, true, false],
+  [0, 1, true, false],
+  [-1, 0, false, true],
+  [1, 0, false, true],
+]
+
 /**
  * A district is the plot a directory sits on. Its surface comes from the zone
  * the backend assigned — grass for residential and campus, pavement for
@@ -36,17 +47,29 @@ function DistrictImpl({ district, active, muted = false, labelScale = 52, onFocu
         <meshLambertMaterial color={ground} />
       </mesh>
 
-      {/* A highlight ring while this district is the active one */}
-      {(active || muted) && (
-        <mesh position={[0, LAYERS.districtHighlight, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[width, depth]} />
-          <meshBasicMaterial
-            color={active ? color : '#0B1020'}
-            transparent
-            opacity={active ? 0.18 : 0.34}
-          />
-        </mesh>
-      )}
+      {/* The active district is outlined, not repainted.
+          
+          It used to be marked by washing the whole plot with the district's
+          language colour, and every *other* plot with a dark overlay -- so
+          clicking one building silently restaged the ground colour of the
+          entire city. The zone colour is information (grass for residential,
+          pavement for downtown); it has to mean the same thing whatever is
+          selected. A border says "this one" without touching it. */}
+      {active &&
+        OUTLINE.map(([sx, sz, fw, fd]) => (
+          <mesh
+            key={`${sx}:${sz}`}
+            position={[
+              sx * (width / 2 - OUTLINE_WIDTH / 2),
+              LAYERS.districtHighlight,
+              sz * (depth / 2 - OUTLINE_WIDTH / 2),
+            ]}
+            rotation={[-Math.PI / 2, 0, 0]}
+          >
+            <planeGeometry args={[fw ? width : OUTLINE_WIDTH, fd ? depth : OUTLINE_WIDTH]} />
+            <meshBasicMaterial color={color} transparent opacity={0.85} toneMapped={false} />
+          </mesh>
+        ))}
 
       {grass && (
         <mesh position={[0, LAYERS.districtRing, 0]} rotation={[-Math.PI / 2, 0, 0]}>
