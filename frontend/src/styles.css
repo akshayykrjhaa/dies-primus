@@ -161,6 +161,11 @@ code {
   background: rgba(255, 209, 102, 0.09);
   color: #ffe2a0;
 }
+.notice--success {
+  border-color: rgba(96, 224, 158, 0.45);
+  background: rgba(96, 224, 158, 0.1);
+  color: #b7f3d3;
+}
 .notice--error {
   border-color: rgba(255, 107, 129, 0.45);
   background: rgba(255, 107, 129, 0.1);
@@ -563,10 +568,90 @@ code {
   box-shadow: 4px 4px 0 var(--toon-ink);
 }
 
-.landing .notice--error {
+.landing .notice--error,
+.landing .notice--success {
   font-family: var(--font-comic);
   border-radius: 14px;
   border-width: 2px;
+}
+
+/* -------------------------------------------------------------- github connect */
+
+.github-connect {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 60;
+}
+.github-connect__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 3px solid var(--toon-ink);
+  background: var(--toon-paper);
+  color: var(--toon-ink);
+  font-family: var(--font-comic);
+  font-weight: 700;
+  font-size: 13px;
+  padding: 8px 16px;
+  box-shadow: 3px 3px 0 var(--toon-ink);
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.github-connect__button:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--toon-ink);
+}
+.github-connect__button:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--toon-ink);
+}
+.github-connect__user {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 3px solid var(--toon-ink);
+  background: var(--toon-paper);
+  padding: 4px 8px 4px 4px;
+  box-shadow: 3px 3px 0 var(--toon-ink);
+}
+.github-connect__avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--toon-ink);
+  display: block;
+}
+.github-connect__login {
+  font-family: var(--font-comic);
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--toon-ink);
+}
+.github-connect__signout {
+  background: transparent;
+  border: none;
+  color: var(--toon-ink);
+  opacity: 0.55;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 8px 4px 2px;
+  text-decoration: underline;
+}
+.github-connect__signout:hover {
+  opacity: 1;
+}
+@media (max-width: 900px) {
+  .github-connect {
+    top: 12px;
+    left: 12px;
+  }
+  .github-connect__login {
+    display: none;
+  }
 }
 
 .landing__scroll-cue {

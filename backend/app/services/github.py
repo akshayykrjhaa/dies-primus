@@ -80,14 +80,14 @@ def parse_repo_url(url: str) -> RepoRef:
     )
 
 
-def _headers() -> dict[str, str]:
+def _headers(token: str | None) -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "repo-city-tour",
     }
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
@@ -109,9 +109,11 @@ def _explain(response: httpx.Response, what: str) -> GitHubError:
 
 
 class GitHubClient:
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
+        """`token` is a logged-in user's own OAuth token, when present;
+        otherwise falls back to the server's static GITHUB_TOKEN, if any."""
         self._client = httpx.AsyncClient(
-            headers=_headers(), timeout=30.0, follow_redirects=True
+            headers=_headers(token or settings.github_token), timeout=30.0, follow_redirects=True
         )
 
     async def __aenter__(self) -> "GitHubClient":

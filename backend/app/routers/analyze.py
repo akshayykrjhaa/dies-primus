@@ -5,11 +5,12 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import settings
+from ..services import auth as auth_service
 from ..services import jobs as job_service
 from ..services.github import GitHubError, parse_repo_url
 from ..services.pipeline import run_analysis
@@ -35,6 +36,7 @@ async def health() -> dict[str, Any]:
         "aiEnabled": settings.has_llm,
         "provider": settings.provider,
         "githubToken": bool(settings.github_token),
+        "githubOAuthEnabled": settings.has_github_oauth,
         "model": settings.model,
         "limits": {
             "maxBuildings": settings.max_buildings,
@@ -50,7 +52,7 @@ async def health() -> dict[str, Any]:
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+async def analyze(request: AnalyzeRequest, http_request: Request) -> AnalyzeResponse:
     try:
         ref = parse_repo_url(request.repoUrl)
     except GitHubError as exc:
@@ -63,9 +65,12 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 
     job = job_service.store.create(request.repoUrl)
 
+    session = auth_service.store.get(http_request.cookies.get(auth_service.SESSION_COOKIE))
+    github_token = session.github_token if session else None
+
     async def runner() -> None:
         try:
-            await run_analysis(job, force=request.force)
+            await run_analysis(job, force=request.force, github_token=github_token)
         except Exception:  # already recorded on the job
             pass
 

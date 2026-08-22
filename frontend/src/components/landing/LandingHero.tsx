@@ -1,7 +1,9 @@
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Github } from 'lucide-react'
 import { useRef, useState } from 'react'
 
+import { GITHUB_LOGIN_URL } from '../../lib/api'
 import { gsap, useGSAP } from '../../lib/gsapSetup'
+import type { AuthUser } from '../../types'
 import { Mascot } from './Mascot'
 import { LandingScene } from './LandingScene'
 import type { Mood } from './toonKit'
@@ -10,6 +12,9 @@ interface Props {
   onAnalyze: (repoUrl: string, force: boolean) => void
   error: string | null
   mood: Mood
+  user: AuthUser | null
+  onLogout: () => void
+  authNotice: { text: string; kind: 'success' | 'error' } | null
 }
 
 const EXAMPLES = [
@@ -21,7 +26,7 @@ const EXAMPLES = [
 
 const SPARKS = ['landing__cta-spark--1', 'landing__cta-spark--2', 'landing__cta-spark--3', 'landing__cta-spark--4']
 
-export function LandingHero({ onAnalyze, error, mood }: Props) {
+export function LandingHero({ onAnalyze, error, mood, user, onLogout, authNotice }: Props) {
   const [url, setUrl] = useState('')
   const scope = useRef<HTMLDivElement>(null)
   const squiggle = useRef<SVGPathElement>(null)
@@ -76,6 +81,23 @@ export function LandingHero({ onAnalyze, error, mood }: Props) {
     <section className="landing__hero" ref={scope}>
       <LandingScene mood={mood} />
 
+      <div className="github-connect">
+        {user?.authenticated ? (
+          <div className="github-connect__user">
+            {user.avatarUrl && <img className="github-connect__avatar" src={user.avatarUrl} alt="" />}
+            <span className="github-connect__login">{user.login}</span>
+            <button className="github-connect__signout" onClick={onLogout}>
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <a className="github-connect__button" href={GITHUB_LOGIN_URL}>
+            <Github size={15} strokeWidth={2.4} />
+            Connect GitHub
+          </a>
+        )}
+      </div>
+
       <div className="landing__hero-content">
         <p className="landing__eyebrow">Repo City</p>
         <h1 className="landing__title">
@@ -129,6 +151,9 @@ export function LandingHero({ onAnalyze, error, mood }: Props) {
         </form>
 
         {error && <div className="notice notice--error">{error}</div>}
+        {authNotice && (
+          <div className={`notice notice--${authNotice.kind}`}>{authNotice.text}</div>
+        )}
 
         <div className="landing__examples">
           <span>Try:</span>

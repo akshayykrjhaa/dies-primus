@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
-from .routers import analyze, chat
+from .routers import analyze, auth, chat
 
 app = FastAPI(
     title="Repo City",
@@ -30,6 +30,7 @@ app.add_middleware(
 )
 
 app.include_router(analyze.router)
+app.include_router(auth.router)
 app.include_router(chat.router)
 
 # If the frontend has been built (npm run build), serve it from the same

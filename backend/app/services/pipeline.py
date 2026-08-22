@@ -34,14 +34,21 @@ def _sample_paths(files: list[FileInfo], limit: int = 60) -> str:
     return "\n".join(f"{f.path} ({f.size} bytes)" for f in top)
 
 
-async def run_analysis(job: Job, force: bool = False) -> dict[str, Any]:
-    """Executes one analysis job, pushing progress into the job as it goes."""
+async def run_analysis(
+    job: Job, force: bool = False, github_token: str | None = None
+) -> dict[str, Any]:
+    """Executes one analysis job, pushing progress into the job as it goes.
+
+    `github_token` is the calling user's own GitHub OAuth token when they're
+    connected (see routers/auth.py); it buys their own rate limit and access
+    to their private repos instead of the server's shared token, if any.
+    """
     analyzer = Analyzer()
     try:
         await job.update("Reading the repository URL", 0.02)
         ref = parse_repo_url(job.repo_url)
 
-        async with GitHubClient() as github:
+        async with GitHubClient(token=github_token) as github:
             await job.update(f"Fetching {ref.slug} from GitHub", 0.06)
             snapshot = await github.snapshot(ref)
 

@@ -40,6 +40,37 @@ class Settings:
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     github_token: str = field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
 
+    # --- GitHub OAuth (per-user "Connect GitHub" login) ---------------------
+    # Create an OAuth App at https://github.com/settings/developers. The
+    # callback URL must match GITHUB_OAUTH_REDIRECT_URI exactly.
+    github_client_id: str = field(default_factory=lambda: os.getenv("GITHUB_CLIENT_ID", ""))
+    github_client_secret: str = field(
+        default_factory=lambda: os.getenv("GITHUB_CLIENT_SECRET", "")
+    )
+    # Dev default routes through the Vite proxy (localhost:5173) rather than
+    # straight to the API port, so the session cookie lands on the same
+    # origin the frontend calls /api on. Point this at the API port instead
+    # for a single-origin build (see start.ps1 -BuildOnly).
+    github_oauth_redirect_uri: str = field(
+        default_factory=lambda: os.getenv(
+            "GITHUB_OAUTH_REDIRECT_URI", "http://localhost:5173/api/auth/github/callback"
+        )
+    )
+    # "repo" is required to read private repositories; drop it to "read:user"
+    # for a public-repos-only deployment.
+    github_oauth_scopes: str = field(
+        default_factory=lambda: os.getenv("GITHUB_OAUTH_SCOPES", "read:user repo")
+    )
+    frontend_url: str = field(
+        default_factory=lambda: os.getenv("FRONTEND_URL", "http://localhost:5173")
+    )
+    # Set true once the app is served over HTTPS so session cookies get the
+    # Secure flag. False by default so local http:// dev keeps working.
+    session_cookie_secure: bool = field(
+        default_factory=lambda: (os.getenv("SESSION_COOKIE_SECURE", "").strip().lower()
+                                  in {"1", "true", "yes"})
+    )
+
     # Point an SDK somewhere else (a gateway, or tests/mock_anthropic.py).
     anthropic_base_url: str = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL", ""))
     groq_base_url: str = field(default_factory=lambda: os.getenv("GROQ_BASE_URL", ""))
@@ -142,6 +173,10 @@ class Settings:
     @property
     def has_llm(self) -> bool:
         return bool(self.api_key)
+
+    @property
+    def has_github_oauth(self) -> bool:
+        return bool(self.github_client_id and self.github_client_secret)
 
     def anthropic_kwargs(self) -> dict[str, str]:
         kwargs = {"api_key": self.anthropic_api_key}

@@ -1,4 +1,4 @@
-import type { CityData, JobSnapshot, RecentCity } from '../types'
+import type { AuthUser, CityData, JobSnapshot, RecentCity } from '../types'
 
 const BASE = '/api'
 
@@ -20,13 +20,20 @@ export interface Health {
   ok: boolean
   aiEnabled: boolean
   githubToken: boolean
+  githubOAuthEnabled: boolean
   model: string
   limits: { maxBuildings: number; maxFilesReadByAI: number }
   note: string
 }
 
+export const GITHUB_LOGIN_URL = `${BASE}/auth/github/login`
+
 export const api = {
   health: () => fetch(`${BASE}/health`).then(json<Health>),
+
+  me: () => fetch(`${BASE}/auth/me`).then(json<AuthUser>),
+
+  logout: () => fetch(`${BASE}/auth/logout`, { method: 'POST' }).then(json<{ ok: boolean }>),
 
   recent: () =>
     fetch(`${BASE}/recent`)

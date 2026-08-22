@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { api, type Health } from '../lib/api'
-import type { RecentCity } from '../types'
+import type { AuthUser, RecentCity } from '../types'
 import { gsap } from '../lib/gsapSetup'
 import { LandingCompare } from './landing/LandingCompare'
 import { LandingFeatures } from './landing/LandingFeatures'
@@ -21,6 +21,12 @@ interface Props {
 
 const MOOD_KEY = 'repocity-landing-mood'
 
+const AUTH_ERROR_MESSAGES: Record<string, string> = {
+  state_mismatch: 'The GitHub sign-in link expired — try connecting again.',
+  github_oauth_failed: 'GitHub sign-in failed — try connecting again.',
+  github_oauth_not_configured: 'GitHub sign-in is not configured on this server.',
+}
+
 function readStoredMood(): Mood {
   try {
     const stored = localStorage.getItem(MOOD_KEY)
@@ -34,12 +40,39 @@ export function Landing({ onAnalyze, onOpenCached, error }: Props) {
   const [health, setHealth] = useState<Health | null>(null)
   const [recent, setRecent] = useState<RecentCity[]>([])
   const [mood, setMood] = useState<Mood>(readStoredMood)
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [authNotice, setAuthNotice] = useState<{ text: string; kind: 'success' | 'error' } | null>(null)
   const flash = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth(null))
     api.recent().then(setRecent).catch(() => setRecent([]))
+    api.me().then(setUser).catch(() => setUser(null))
+
+    const params = new URLSearchParams(window.location.search)
+    const authError = params.get('auth_error')
+    const connected = params.get('connected')
+    if (authError || connected) {
+      if (authError) {
+        setAuthNotice({ text: AUTH_ERROR_MESSAGES[authError] ?? 'GitHub sign-in failed.', kind: 'error' })
+      } else {
+        setAuthNotice({ text: 'GitHub connected.', kind: 'success' })
+      }
+      params.delete('auth_error')
+      params.delete('connected')
+      const rest = params.toString()
+      window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''))
+      const timer = setTimeout(() => setAuthNotice(null), 6000)
+      return () => clearTimeout(timer)
+    }
   }, [])
+
+  const logout = () => {
+    api
+      .logout()
+      .then(() => setUser({ authenticated: false }))
+      .catch(() => {})
+  }
 
   const toggleMood = () => {
     const next: Mood = mood === 'day' ? 'night' : 'day'
@@ -76,7 +109,14 @@ export function Landing({ onAnalyze, onOpenCached, error }: Props) {
       <MoodToggle mood={mood} onToggle={toggleMood} />
       <div className="landing__flash" ref={flash} aria-hidden="true" />
 
-      <LandingHero onAnalyze={onAnalyze} error={error} mood={mood} />
+      <LandingHero
+        onAnalyze={onAnalyze}
+        error={error}
+        mood={mood}
+        user={user}
+        onLogout={logout}
+        authNotice={authNotice}
+      />
       <LandingMascotIntro />
       <LandingSteps />
       <LandingCompare mood={mood} />

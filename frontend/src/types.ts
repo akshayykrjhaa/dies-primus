@@ -151,6 +151,14 @@ export interface JobSnapshot {
   result?: CityData
 }
 
+export interface AuthUser {
+  authenticated: boolean
+  login?: string
+  name?: string
+  avatarUrl?: string
+  htmlUrl?: string
+}
+
 export interface RecentCity {
   slug: string
   url: string
