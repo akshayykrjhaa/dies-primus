@@ -101,6 +101,59 @@ export function riverCurve(span: number): THREE.CatmullRomCurve3 {
   ])
 }
 
+/**
+ * Half-width of the river's bank ribbon at parameter `t` along the curve.
+ *
+ * This mirrors the width curve `River`'s `ribbon()` uses, taking the top of
+ * its per-sample random term rather than the term itself: a keep-out that
+ * merely averaged the width would still let things stand in the water
+ * wherever the channel happened to run wide.
+ */
+function bankHalfWidth(span: number, t: number): number {
+  return span * 0.15 * (0.5 + t * 1.6 + Math.sin(t * 6.5) * 0.16 + 0.06)
+}
+
+export interface WaterCircle {
+  x: number
+  z: number
+  radius: number
+}
+
+/**
+ * Every patch of water in the valley, as circles to keep clear of.
+ *
+ * The mountains already carved themselves away from the channel, but the
+ * conifers did not, so stands of spruce grew straight out of the river. Both
+ * now test against this one description of where the water is, which also
+ * means the two can never drift apart as the curve is tuned.
+ */
+export function waterFootprint(span: number, steps = 160): WaterCircle[] {
+  const curve = riverCurve(span)
+  const circles: WaterCircle[] = []
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const point = curve.getPointAt(t)
+    circles.push({ x: point.x, z: point.z, radius: bankHalfWidth(span, t) })
+  }
+  // The lake at the mouth, drawn as a disc of this radius by `River`.
+  const mouth = curve.getPointAt(0.97)
+  circles.push({ x: mouth.x, z: mouth.z, radius: span * 0.34 })
+  return circles
+}
+
+/** True when something of `radius` at (x, z) stands on dry ground. */
+export function clearsWater(
+  water: WaterCircle[], x: number, z: number, radius: number, margin = 0,
+): boolean {
+  for (const circle of water) {
+    const dx = circle.x - x
+    const dz = circle.z - z
+    const keep = circle.radius + radius + margin
+    if (dx * dx + dz * dz < keep * keep) return false
+  }
+  return true
+}
+
 const ROCK_A = new THREE.Color('#767E8C')
 const ROCK_B = new THREE.Color('#565F6C')
 const SNOW_A = new THREE.Color('#FFFFFF')
@@ -192,18 +245,11 @@ function Mountains({ span, night, entranceZ }: LandscapeProps) {
       { radius: span * 3.0, count: 24, height: span * 0.76, spread: span * 0.3 },
     ]
 
-    // Sample the river once; any peak that would stand in the water (or on
-    // its banks) is dropped, so the channel stays visible from every angle.
-    const riverPoints = riverCurve(span).getPoints(140)
-    const riverClearance = span * 0.3
-    const clearsRiver = (x: number, z: number, radius: number) => {
-      for (const point of riverPoints) {
-        const dx = point.x - x
-        const dz = point.z - z
-        if (dx * dx + dz * dz < (riverClearance + radius) ** 2) return false
-      }
-      return true
-    }
+    // Sample the water once; any peak that would stand in it (or on its
+    // banks) is dropped, so the channel stays visible from every angle. The
+    // keep-out follows the river's real width rather than a flat radius, so
+    // the range can still close in around the narrow gorge at its source.
+    const water = waterFootprint(span)
 
     for (const ring of rings) {
       for (let i = 0; i < ring.count; i++) {
@@ -221,7 +267,7 @@ function Mountains({ span, night, entranceZ }: LandscapeProps) {
 
         const px = Math.cos(angle) * distance
         const pz = Math.sin(angle) * distance
-        if (!clearsRiver(px, pz, radius)) continue
+        if (!clearsWater(water, px, pz, radius, span * 0.05)) continue
 
         const peak = mountainPeak(radius, height, random)
         peak.rotateY(random() * Math.PI * 2)
@@ -237,7 +283,7 @@ function Mountains({ span, night, entranceZ }: LandscapeProps) {
 
   // Snow reflects the sky, so it goes blue at night rather than merely dark.
   const tint = useMemo(
-    () => new THREE.Color('#FFFFFF').lerp(new THREE.Color('#8FA8D8'), night * 0.6),
+    () => new THREE.Color('#FFFFFF').lerp(new THREE.Color('#5D71A8'), night * 0.78),
     [night],
   )
 
@@ -256,9 +302,22 @@ function Conifers({ span, night, entranceZ }: LandscapeProps) {
     const trunkMatrices: THREE.Matrix4[] = []
     const gateAngle = Math.atan2(entranceZ, 0)
 
+    // Where the water is. Spruce grow on the bank, never out of the river --
+    // the stands used to be placed on angle and distance alone, which is how
+    // whole clusters ended up standing mid-channel and mid-lake.
+    const water = waterFootprint(span)
+    // The canopy is `foliage` (radius 3.4 at its widest tier) scaled by the
+    // instance scale, plus the spread of the stand around its centre.
+    const spread = span * 0.08
+    const canopyRadius = (scale: number) => scale * 3.4
+
     // Clustered stands on the snowfield between the city and the first ridge.
-    const clusters = 14
-    for (let c = 0; c < clusters; c++) {
+    // Placement is rejection-sampled with a retry budget rather than a bare
+    // `continue`: skipping a rejected candidate outright thinned the forest
+    // on exactly the side the river runs down.
+    const clusters = 16
+    let placed = 0
+    for (let attempt = 0; attempt < clusters * 12 && placed < clusters; attempt++) {
       const angle = random() * Math.PI * 2
       let delta = angle - gateAngle
       while (delta > Math.PI) delta -= Math.PI * 2
@@ -268,12 +327,20 @@ function Conifers({ span, night, entranceZ }: LandscapeProps) {
       const distance = span * (0.78 + random() * 0.3)
       const cx = Math.cos(angle) * distance
       const cz = Math.sin(angle) * distance
+      // Reject the whole stand if its centre is over water, taking the
+      // spread into account so a cluster cannot straddle the bank.
+      if (!clearsWater(water, cx, cz, spread * 0.5, span * 0.01)) continue
+      placed++
 
       const inCluster = 4 + Math.floor(random() * 7)
       for (let i = 0; i < inCluster; i++) {
-        const x = cx + (random() - 0.5) * span * 0.16
-        const z = cz + (random() - 0.5) * span * 0.16
+        const x = cx + (random() - 0.5) * spread * 2
+        const z = cz + (random() - 0.5) * spread * 2
         const scale = span * 0.006 * (0.7 + random() * 0.8)
+        // ...and again per tree, because the stand's spread reaches further
+        // than its centre test can vouch for.
+        if (!clearsWater(water, x, z, canopyRadius(scale), span * 0.008)) continue
+
         const matrix = new THREE.Matrix4()
         matrix.compose(
           new THREE.Vector3(x, -0.6, z),
@@ -315,7 +382,7 @@ function Conifers({ span, night, entranceZ }: LandscapeProps) {
   const foliageMesh = useMemo(() => {
     const material = new THREE.MeshLambertMaterial({
       vertexColors: true,
-      color: new THREE.Color('#FFFFFF').lerp(new THREE.Color('#6E87C0'), night * 0.55),
+      color: new THREE.Color('#FFFFFF').lerp(new THREE.Color('#3F4E78'), night * 0.8),
     })
     const mesh = new THREE.InstancedMesh(foliage, material, Math.max(1, trees.length))
     trees.forEach((matrix, index) => mesh.setMatrixAt(index, matrix))
@@ -462,7 +529,7 @@ function River({ span, night }: LandscapeProps) {
     [night],
   )
   const bankColor = useMemo(
-    () => new THREE.Color('#D6EEF6').lerp(new THREE.Color('#5E76A8'), night * 0.6),
+    () => new THREE.Color('#D6EEF6').lerp(new THREE.Color('#3B4B76'), night * 0.82),
     [night],
   )
 
@@ -520,7 +587,7 @@ function River({ span, night }: LandscapeProps) {
 
 export function Landscape({ span, night, entranceZ }: LandscapeProps) {
   const snow = useMemo(
-    () => new THREE.Color('#F0F6FC').lerp(new THREE.Color('#6B84BC'), night * 0.62),
+    () => new THREE.Color('#F0F6FC').lerp(new THREE.Color('#3E4E7C'), night * 0.86),
     [night],
   )
 

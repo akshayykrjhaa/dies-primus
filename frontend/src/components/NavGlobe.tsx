@@ -1,4 +1,4 @@
-import { MutableRefObject, useEffect, useRef } from 'react'
+import { MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import type { CameraPose } from './scene/CityScene'
 
@@ -8,6 +8,31 @@ interface Props {
   onBearing: (azimuth: number, pitch?: number) => void
   /** Pull back to see the whole city from above. */
   onOverview: () => void
+  /**
+   * Written while the globe is being dragged: the heading, in world radians,
+   * the viewer is asking to look along. `null` releases the camera back to
+   * OrbitControls. `CityScene`'s BearingDriver reads it every frame.
+   */
+  bearingDrag: MutableRefObject<number | null>
+}
+
+/**
+ * World heading (`atan2(dx, dz)` toward what the camera looks at) to the
+ * needle's angle on the canvas, where +x is right and +y is *down*.
+ *
+ * Looking north is heading PI and should draw straight up (-PI/2); looking
+ * east is heading PI/2 and should draw to the right (0). Both fall out of
+ * `PI/2 - heading`. The old code used `heading - PI/2`, the negation of this,
+ * which mirrored the compass east-for-west: the needle swung left as you
+ * orbited right, so the globe disagreed with the view it was describing.
+ */
+function headingToScreen(heading: number): number {
+  return Math.PI / 2 - heading
+}
+
+/** The inverse, for turning a drag on the globe back into a heading. */
+function screenToHeading(screen: number): number {
+  return Math.PI / 2 - screen
 }
 
 const SIZE = 104
@@ -22,8 +47,9 @@ const SIZE = 104
  * pose on its own animation frame, the same way the minimap is, so tracking
  * the camera costs no React renders.
  */
-export function NavGlobe({ pose, onBearing, onOverview }: Props) {
+export function NavGlobe({ pose, onBearing, onOverview, bearingDrag }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [dragging, setDragging] = useState(false)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -69,8 +95,7 @@ export function NavGlobe({ pose, onBearing, onOverview }: Props) {
       ctx.stroke()
 
       // The heading the camera is actually looking along.
-      const angle = pose.current.angle
-      const nose = angle - Math.PI / 2 // screen space: -Y is up/north
+      const nose = headingToScreen(pose.current.angle)
 
       // Cone of view.
       ctx.fillStyle = 'rgba(126, 249, 200, 0.22)'
@@ -109,9 +134,63 @@ export function NavGlobe({ pose, onBearing, onOverview }: Props) {
     { label: 'W', azimuth: -Math.PI / 2, className: 'nav-globe__w' },
   ]
 
+  /** Turns a pointer position on the canvas into a heading. */
+  const headingAt = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    const box = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - box.left - box.width / 2
+    const y = event.clientY - box.top - box.height / 2
+    if (Math.hypot(x, y) < 6) return null // dead zone at the pivot
+    return screenToHeading(Math.atan2(y, x))
+  }, [])
+
+  const onPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLCanvasElement>) => {
+      const heading = headingAt(event)
+      if (heading === null) return
+      event.currentTarget.setPointerCapture(event.pointerId)
+      bearingDrag.current = heading
+      setDragging(true)
+    },
+    [headingAt, bearingDrag],
+  )
+
+  const onPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLCanvasElement>) => {
+      if (bearingDrag.current === null) return
+      const heading = headingAt(event)
+      if (heading !== null) bearingDrag.current = heading
+    },
+    [headingAt, bearingDrag],
+  )
+
+  const endDrag = useCallback(
+    (event: React.PointerEvent<HTMLCanvasElement>) => {
+      if (bearingDrag.current === null) return
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+      bearingDrag.current = null
+      setDragging(false)
+    },
+    [bearingDrag],
+  )
+
   return (
     <div className="nav-globe">
-      <canvas ref={canvasRef} style={{ width: SIZE, height: SIZE }} />
+      <canvas
+        ref={canvasRef}
+        style={{
+          width: SIZE,
+          height: SIZE,
+          cursor: dragging ? 'grabbing' : 'grab',
+          touchAction: 'none',
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        title="Drag to swing the view around the city"
+      />
       {points.map((point) => (
         <button
           key={point.label}

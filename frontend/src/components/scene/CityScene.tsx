@@ -41,6 +41,16 @@ export interface FocusRequest {
    */
   azimuth?: number
   pitch?: number
+  /**
+   * Place the camera at once rather than flying it there.
+   *
+   * Arrival used this: the city mounted wherever the camera happened to be
+   * and then flew to the establishing shot, so stepping through the gate gave
+   * you a lurch across the map on the very frame the whole city was being
+   * built. Landing already framed means the first thing drawn is the shot you
+   * are meant to see.
+   */
+  immediate?: boolean
 }
 
 export interface ZoomRequest {
@@ -65,6 +75,8 @@ interface Props {
   zoom: ZoomRequest | null
   hoverAnchor: RefObject<HTMLDivElement>
   cameraPose: MutableRefObject<CameraPose>
+  /** Set while the compass is dragged; see `BearingDriver`. */
+  bearingDrag: MutableRefObject<number | null>
   briefingOpen: boolean
   timeMode: TimeMode
   touring: boolean
@@ -111,10 +123,19 @@ function CameraRig({ focus }: { focus: FocusRequest | null }) {
       direction = new THREE.Vector3(0.62, 0.55, 1).normalize()
     }
 
-    goal.current = {
-      target,
-      position: target.clone().add(direction.multiplyScalar(focus.distance)),
+    const position = target.clone().add(direction.multiplyScalar(focus.distance))
+
+    if (focus.immediate) {
+      camera.position.copy(position)
+      if (controls?.target) {
+        controls.target.copy(target)
+        controls.update()
+      }
+      goal.current = null
+      return
     }
+
+    goal.current = { target, position }
   }, [focus, camera, controls])
 
   useFrame((_, delta) => {
@@ -273,6 +294,106 @@ function DaylightRig({ sky, sun, hemi }: {
   return null
 }
 
+/**
+ * The moon: a disc high in the sky, with a soft halo around it.
+ *
+ * Drawn far out and unlit, so it reads as a light source rather than a
+ * sphere in the scene, and parented to the camera's target distance so it
+ * never falls outside the far plane. It fades in with `moonUp`, alongside the
+ * window lights and the street lamps.
+ */
+/** How high the moon *disc* hangs, in radians above the horizon. */
+const MOON_ELEVATION = 0.17
+
+function Moon({ sky, span }: { sky: Daylight; span: number }) {
+  const group = useRef<THREE.Group>(null)
+  const disc = useRef<THREE.MeshBasicMaterial>(null)
+  const halo = useRef<THREE.MeshBasicMaterial>(null)
+  const shown = useRef(0)
+
+  useFrame((_, delta) => {
+    // Ease, so the moon rises with the rest of the night rather than blinking
+    // into existence when the clock ticks past a keyframe.
+    shown.current += (sky.moonUp - shown.current) * Math.min(1, delta * 1.6)
+    if (disc.current) disc.current.opacity = shown.current
+    if (halo.current) halo.current.opacity = shown.current * 0.32
+    if (group.current) {
+      group.current.visible = shown.current > 0.01
+      // Only the moon's *bearing* comes from the light vector; its height in
+      // the sky is chosen for framing. The two have to be decoupled: the key
+      // light wants to be high (a low moon rakes the city and leaves half of
+      // every building black), but the establishing shot looks slightly down,
+      // so a disc placed at the light's own elevation sits above the frame
+      // and is never seen. Low and far puts it over the range at the back.
+      const bearing = Math.atan2(sky.moon.x, sky.moon.z)
+      const flat = Math.cos(MOON_ELEVATION) * span * 4.2
+      group.current.position.set(
+        Math.sin(bearing) * flat,
+        Math.sin(MOON_ELEVATION) * span * 4.2,
+        Math.cos(bearing) * flat,
+      )
+    }
+  })
+
+  const size = span * 0.16
+
+  return (
+    <group ref={group}>
+      <mesh>
+        <sphereGeometry args={[size, 24, 16]} />
+        <meshBasicMaterial ref={disc} color="#F2F6FF" transparent opacity={0} fog={false} toneMapped={false} />
+      </mesh>
+      {/* Halo: a bigger, additive shell so the moon glows into the sky. */}
+      <mesh>
+        <sphereGeometry args={[size * 2.1, 20, 12]} />
+        <meshBasicMaterial
+          ref={halo}
+          color="#9FB6F0"
+          transparent
+          opacity={0}
+          side={THREE.BackSide}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          fog={false}
+          toneMapped={false}
+        />
+      </mesh>
+    </group>
+  )
+}
+
+/**
+ * Lets the compass swing the camera around the city, one-to-one with the drag.
+ *
+ * The globe's N/E/S/W buttons ask for a *fly-to*, which eases over about a
+ * second -- right for a click, useless for a drag, where the view has to
+ * follow the pointer. This drives the camera directly instead: it keeps the
+ * orbit target, the distance and the pitch exactly as they are and rewrites
+ * only the compass bearing, which is precisely what dragging with the mouse in
+ * the scene does.
+ */
+function BearingDriver({ bearing }: { bearing: MutableRefObject<number | null> }) {
+  const camera = useThree((state) => state.camera)
+  const controls = useThree((state) => state.controls) as any
+  const spherical = useMemo(() => new THREE.Spherical(), [])
+  const offset = useMemo(() => new THREE.Vector3(), [])
+
+  useFrame(() => {
+    const heading = bearing.current
+    if (heading === null || !controls) return
+
+    offset.copy(camera.position).sub(controls.target)
+    spherical.setFromVector3(offset)
+    // The camera stands on the far side of its target from the way it looks,
+    // so the orbit angle is the heading turned through half a circle.
+    spherical.theta = heading - Math.PI
+    camera.position.copy(controls.target).add(offset.setFromSpherical(spherical))
+    controls.update()
+  })
+
+  return null
+}
+
 /** Reports the camera position for the minimap without re-rendering React. */
 function PoseReporter({ pose }: { pose: MutableRefObject<CameraPose> }) {
   const camera = useThree((state) => state.camera)
@@ -300,6 +421,7 @@ export function CityScene({
   zoom,
   hoverAnchor,
   cameraPose,
+  bearingDrag,
   briefingOpen,
   timeMode,
   touring,
@@ -335,19 +457,24 @@ export function CityScene({
     <>
       <color attach="background" args={[sky.skyColor.getHex()]} />
       {/* Fog is tuned to swallow the edge of the valley floor, so the city
-          sits among mountains instead of on a visible white tabletop. */}
-      <fog attach="fog" args={[sky.fogColor.getHex(), span * 1.5, span * 4.2]} />
+          sits among mountains instead of on a visible white tabletop. It has
+          to finish inside the camera's far plane (span * 5.6) or the furthest
+          peaks reach full clip while still half visible. */}
+      <fog attach="fog" args={[sky.fogColor.getHex(), span * 1.7, span * 4.6]} />
 
       <hemisphereLight
         ref={hemiRef}
         args={[sky.hemiSky.getHex(), sky.hemiGround.getHex(), sky.hemiIntensity]}
       />
+      {/* The key light: the sun by day, the moon after dark. `sky.key` already
+          carries the blend, and unlike the raw sun vector it never dips toward
+          the horizon -- which is what used to leave night faces unlit. */}
       <directionalLight
         ref={sunRef}
         position={[
-          sky.sun.x * span * 0.9,
-          Math.max(span * 0.12, sky.sun.y * span * 0.9),
-          sky.sun.z * span * 0.9,
+          sky.key.x * span * 0.9,
+          Math.max(span * 0.3, sky.key.y * span * 0.9),
+          sky.key.z * span * 0.9,
         ]}
         intensity={sky.sunIntensity}
         color={sky.sunColor.getHex()}
@@ -363,6 +490,16 @@ export function CityScene({
         shadow-bias={-0.0006}
         shadow-normalBias={0.05}
       />
+      {/* A soft counter-fill from the far side. One key light, however high,
+          still leaves the faces turned away from it black; at night that read
+          as half of every building missing. Intensity is nearly zero by day,
+          where the sky already does this job. */}
+      <directionalLight
+        position={[-sky.key.x * span, span * 0.45, -sky.key.z * span]}
+        intensity={0.1 + sky.night * 0.55}
+        color={sky.hemiSky.getHex()}
+      />
+      <Moon sky={sky} span={span} />
       <DaylightRig sky={sky} sun={sunRef} hemi={hemiRef} />
 
       {/* The glacier valley: snowfield, meltwater river and peaks, all sized
@@ -436,6 +573,7 @@ export function CityScene({
         target={[0, 4, 0]}
       />
       <CameraRig focus={focus} />
+      <BearingDriver bearing={bearingDrag} />
       <ZoomController zoom={zoom} />
       <ProximityWatcher selected={selected} enabled={!touring} onLeave={onLeaveSelected} />
       <HoverProjector building={hovered} anchor={hoverAnchor} />

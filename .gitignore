@@ -7,6 +7,7 @@ __pycache__/
 backend/.env
 .env
 myenv
+.claude/
 
 
 # Analysis cache (regenerated on demand)

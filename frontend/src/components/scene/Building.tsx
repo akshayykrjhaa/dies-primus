@@ -131,6 +131,17 @@ function FocusBeam({ height, width }: { height: number; width: number }) {
   )
 }
 
+/**
+ * How far an untagged material fades in focus mode. Materials that need to
+ * stay legible (window panes, lit windows) carry their own, higher floor in
+ * `userData.dimTo`.
+ *
+ * 0.3 rather than the 0.2 this started at: below about a quarter a shell stops
+ * hiding its own interior, and a tall building reads as a wireframe of its far
+ * side rather than as a faded building.
+ */
+const DIM_FLOOR = 0.3
+
 function BuildingImpl({
   building,
   hovered,
@@ -148,8 +159,15 @@ function BuildingImpl({
   // Dimming touches every material in the shell, so it is applied by walking
   // the group rather than by threading a prop through each archetype.
   const materials = useRef<THREE.Material[]>([])
-  const opacity = useRef(1)
+  // 1 = fully present, 0 = fully dimmed. One value drives the whole building;
+  // each material decides how far back *it* goes, via `userData.dimTo`.
+  const fade = useRef(1)
 
+  // Re-collected whenever the dim state changes rather than on a fixed set of
+  // props: the logo badge waits on an async texture and mounts late, so a list
+  // gathered once at mount missed it and the badge stayed bright over a faded
+  // building. `night` is deliberately not a dependency -- the window meshes no
+  // longer rebuild at dusk, so it never invalidated anything.
   useEffect(() => {
     const found: THREE.Material[] = []
     group.current?.traverse((child) => {
@@ -160,7 +178,7 @@ function BuildingImpl({
       }
     })
     materials.current = found
-  }, [building.id, detail, night])
+  }, [building.id, detail, dimmed])
 
   useFrame((_, delta) => {
     const k = Math.min(1, delta * 8)
@@ -172,14 +190,52 @@ function BuildingImpl({
       group.current.scale.set(next, 1 + (next - 1) * 0.4, next)
     }
 
-    const targetOpacity = dimmed ? 0.2 : 1
-    if (Math.abs(opacity.current - targetOpacity) > 0.005) {
-      opacity.current += (targetOpacity - opacity.current) * k
+    // Focus mode fades the rest of the city back behind the building you
+    // clicked. Everything eases on one value; how far back a given material
+    // actually goes is its own business.
+    const target = dimmed ? 0 : 1
+    if (fade.current !== target) {
+      // Snap once inside the threshold. A plain exponential lerp only ever
+      // approaches its target, so an undimmed building settled just shy of 1
+      // and stayed in the transparent pass forever.
+      fade.current =
+        Math.abs(fade.current - target) < 0.004
+          ? target
+          : fade.current + (target - fade.current) * k
+
       for (const material of materials.current) {
         const m = material as THREE.MeshLambertMaterial
-        m.opacity = opacity.current
-        m.transparent = opacity.current < 0.985
-        m.depthWrite = opacity.current > 0.6
+        // Walls fall back furthest; windows and lit panes hold on (they carry
+        // their own floor in userData -- see Archetypes.tsx). Fading every
+        // material to the same value is what made the windows and lights
+        // disappear the moment you focused a building: at the shell's floor
+        // the panes were multiplied down to nothing, so a dimmed building lost
+        // exactly the detail that identified it.
+        const floor = (m.userData.dimTo as number | undefined) ?? DIM_FLOOR
+        const value = floor + (1 - floor) * fade.current
+        m.opacity = value
+        m.transparent = value < 1
+
+        // Emissive surfaces ignore opacity as far as their own brightness is
+        // concerned, so a lit window stayed at full glow over a wall that had
+        // faded away beneath it. The window materials record the glow the time
+        // of day asked for; scale that by the same fade. `dimFactor` is left
+        // on the material so the day/night ramp can re-apply it when it next
+        // writes (see useLightRamp / Archetypes.tsx).
+        m.userData.dimFactor = value
+        const glow = m.userData.emissiveBase as number | undefined
+        if (glow !== undefined) m.emissiveIntensity = glow * value
+        // Depth writing stays ON while faded. This is the fix for dimmed
+        // buildings looking scrambled: with it off, every mesh in the shell --
+        // walls, roof, both window sets, pilasters -- landed in the
+        // transparent pass sorted only by its own centre, so roof slabs,
+        // interior towers and double-sided pieces drew straight through the
+        // near wall. It is worst on the largest buildings, where the distance
+        // between the two faces is greatest, and worst again at night when
+        // the lit panes shine through. Writing depth costs the ability to see
+        // one dimmed building through another and buys back correct occlusion
+        // inside each of them, from any angle.
+        m.depthWrite = true
       }
     }
 

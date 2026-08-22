@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 
 import { LAYERS } from '../../lib/layers'
 import type { Road } from '../../types'
+import { useLightRamp } from './useLightRamp'
 
 /**
  * The street network.
@@ -66,33 +67,48 @@ export function Roads({ roads, night = 0 }: { roads: Road[]; night?: number }) {
     return { surfaces, kerbs, dashes }
   }, [roads])
 
+  // Asphalt lightens slightly at night so the street grid still reads, and the
+  // paint picks up a glow as though catching the lamps. Both used to flip at a
+  // hard `night > 0.15`, which snapped the whole road network to its night
+  // colours a frame before the lamps themselves came on; each mesh now eases
+  // on the same ramp as every other light in the city.
   return (
     <group>
-      {/* Asphalt lightens slightly at night so the street grid still reads,
-          and the paint picks up a glow as though catching the lamps. */}
       <Instanced
         matrices={surfaces}
-        color={night > 0.15 ? '#3A4354' : ASPHALT}
+        color={ASPHALT}
+        nightColor="#3A4354"
+        night={night}
         plane
         receiveShadow
       />
-      <Instanced matrices={kerbs} color={night > 0.15 ? '#9EA9BC' : KERB} />
+      <Instanced matrices={kerbs} color={KERB} nightColor="#9EA9BC" night={night} />
       <Instanced
         matrices={dashes}
         color={PAINT}
+        night={night}
         plane
         offset
-        emissive={night > 0.15 ? '#FFE9A8' : undefined}
-        emissiveIntensity={night * 0.9}
+        emissive="#FFE9A8"
+        emissiveIntensity={0.9}
       />
     </group>
   )
 }
 
-/** A tiny instanced-mesh helper: one draw call per colour. */
+/**
+ * A tiny instanced-mesh helper: one draw call per colour.
+ *
+ * The mesh is built from geometry inputs only. Colour and glow are pushed into
+ * the existing material afterwards, so the time of day never rebuilds the road
+ * network -- rebuilding a few thousand instances every time the clock ticked
+ * was a visible hitch, and it reset the buffers mid-fade.
+ */
 function Instanced({
   matrices,
   color,
+  nightColor,
+  night,
   plane = false,
   receiveShadow = false,
   offset = false,
@@ -100,12 +116,16 @@ function Instanced({
   emissiveIntensity = 0,
 }: {
   matrices: THREE.Matrix4[]
-  color: string
+  color: THREE.ColorRepresentation
+  /** Colour at full dark; the ramp eases between the two. */
+  nightColor?: THREE.ColorRepresentation
+  night: number
   plane?: boolean
   receiveShadow?: boolean
   /** Nudges the depth test for markings painted onto the asphalt. */
   offset?: boolean
-  emissive?: string
+  emissive?: THREE.ColorRepresentation
+  /** Glow at full dark. Scaled by the ramp, so it is zero in daylight. */
   emissiveIntensity?: number
 }) {
   const mesh = useMemo(() => {
@@ -117,8 +137,6 @@ function Instanced({
       polygonOffset: offset,
       polygonOffsetFactor: offset ? -2 : 0,
       polygonOffsetUnits: offset ? -2 : 0,
-      emissive: new THREE.Color(emissive ?? '#000000'),
-      emissiveIntensity,
     })
     const instanced = new THREE.InstancedMesh(geometry, material, Math.max(1, matrices.length))
     matrices.forEach((matrix, index) => instanced.setMatrixAt(index, matrix))
@@ -127,7 +145,28 @@ function Instanced({
     instanced.receiveShadow = receiveShadow
     instanced.frustumCulled = false
     return instanced
-  }, [matrices, color, plane, receiveShadow, offset, emissive, emissiveIntensity])
+  }, [matrices, plane, receiveShadow, offset, color])
+
+  const day = useMemo(() => new THREE.Color(color), [color])
+  const dark = useMemo(
+    () => new THREE.Color(nightColor ?? color),
+    [nightColor, color],
+  )
+
+  useLightRamp(night, (lit) => {
+    const material = mesh.material as THREE.MeshLambertMaterial
+    material.color.copy(day).lerp(dark, lit)
+    material.emissive.set(emissive ?? '#000000')
+    material.emissiveIntensity = emissiveIntensity * lit
+  }, mesh)
+
+  useEffect(
+    () => () => {
+      mesh.geometry.dispose()
+      ;(mesh.material as THREE.Material).dispose()
+    },
+    [mesh],
+  )
 
   return <primitive object={mesh} />
 }

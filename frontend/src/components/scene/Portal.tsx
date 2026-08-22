@@ -272,6 +272,11 @@ export function Portal({ intensity = 0, scale = 1 }: PortalProps) {
   return (
     <group scale={scale}>
       {/* the vortex itself: two counter-rotating discs for parallax */}
+      {/* Both discs are double-sided. A CircleGeometry faces +Z and materials
+          are front-side by default, so walking round the gate culled the
+          entire vortex: the ring, the pipes and the machine stayed, and the
+          pink swirl inside them simply disappeared. The aperture is meant to
+          be a hole through the world -- it has to read from both sides. */}
       <mesh ref={swirlBack} position={[0, 0, -0.5]}>
         <circleGeometry args={[radius * 0.92, 48]} />
         <meshBasicMaterial
@@ -279,6 +284,7 @@ export function Portal({ intensity = 0, scale = 1 }: PortalProps) {
           transparent
           opacity={0.6}
           depthWrite={false}
+          side={THREE.DoubleSide}
           toneMapped={false}
         />
       </mesh>
@@ -289,6 +295,7 @@ export function Portal({ intensity = 0, scale = 1 }: PortalProps) {
           transparent
           opacity={0.92}
           depthWrite={false}
+          side={THREE.DoubleSide}
           blending={THREE.AdditiveBlending}
           toneMapped={false}
         />

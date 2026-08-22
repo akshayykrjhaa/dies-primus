@@ -35,7 +35,10 @@ const TOUR_INTERVAL = 7000
 type Phase = 'portal' | 'warp' | 'city'
 
 const WARP_TO_WHITE = 1500 // camera dive before the flash peaks
-const WARP_TO_CITY = 1850 // city mounts behind the white
+// The flash needs its full 0.34s CSS fade-in before the city mounts behind
+// it. At 1850 there were ten milliseconds of margin, so any jitter in the
+// transition let the mount show through.
+const WARP_TO_CITY = 2000 // city mounts behind the white
 
 export function CityView({ data, jobId, cacheKey, onExit }: Props) {
   const [hovered, setHovered] = useState<Building | null>(null)
@@ -71,6 +74,10 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
 
   const hoverAnchor = useRef<HTMLDivElement>(null)
   const cameraPose = useRef<CameraPose>({ x: 0, z: 0, angle: 0 })
+  // While the compass is being dragged this holds the heading it is asking
+  // for, in world radians; null the rest of the time. A ref rather than state
+  // so a drag drives the camera at frame rate without re-rendering the app.
+  const bearingDrag = useRef<number | null>(null)
   const focusKey = useRef(0)
   const zoomKey = useRef(0)
   const clearTimer = useRef<number | null>(null)
@@ -84,7 +91,7 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
       z: number,
       distance: number,
       preserveBearing = false,
-      angles?: { azimuth?: number; pitch?: number },
+      angles?: { azimuth?: number; pitch?: number; immediate?: boolean },
     ) => {
       focusKey.current += 1
       setFocus({
@@ -96,6 +103,7 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
         preserveBearing,
         azimuth: angles?.azimuth,
         pitch: angles?.pitch,
+        immediate: angles?.immediate,
       })
     },
     [],
@@ -193,20 +201,40 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
     setTouring(false)
   }, [requestFocus, span])
 
-  const resetView = useCallback(() => {
-    requestFocus(0, 4, 0, span * 0.92)
-  }, [requestFocus, span])
+  /**
+   * The establishing shot: the whole city from the south, over the gate, with
+   * the valley and the range behind it.
+   *
+   * This is both what "Overview" gives you and what you arrive to. Arrival
+   * used to fly straight to the portal, which put the camera close enough that
+   * the city was cropped off the top of the frame -- you landed in front of a
+   * gate with no sense of what was behind it.
+   */
+  const overview = useCallback(
+    (immediate = false) => {
+      requestFocus(
+        0,
+        span * 0.05,
+        data.bounds.depth * 0.1,
+        span * 1.35,
+        false,
+        // A fairly flat approach: you read a city by its facades, not its
+        // roofs, and it leaves a band of sky for the range and the moon.
+        { azimuth: 0, pitch: 1.27, immediate },
+      )
+      setTouring(false)
+    },
+    [requestFocus, span, data.bounds.depth],
+  )
+
+  const resetView = useCallback(() => overview(false), [overview])
 
   // Step through the portal: dive, flash, then the city exists behind it.
   const enterCity = useCallback(() => {
     setPhase((current) => {
       if (current !== 'portal') return current
       window.setTimeout(() => setFlash(true), WARP_TO_WHITE)
-      window.setTimeout(() => {
-        setPhase('city')
-        // Let the city paint one frame under the white before revealing it.
-        window.setTimeout(() => setFlash(false), 260)
-      }, WARP_TO_CITY)
+      window.setTimeout(() => setPhase('city'), WARP_TO_CITY)
       return 'warp'
     })
   }, [])
@@ -224,12 +252,40 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
     return () => window.removeEventListener('keydown', onKey)
   }, [phase, enterCity])
 
-  // Arrive at the gate, exactly like walking into a real city.
+  // Lift the white only once the city has actually painted a frame.
+  //
+  // This used to be a flat 260ms timer, which is wall-clock time -- and the
+  // frame that mounts several hundred buildings blocks the main thread for
+  // longer than that. The timer therefore fired the instant the hitch ended,
+  // so the flash began lifting on the very frame the stutter happened. Two
+  // nested animation frames guarantee one complete painted frame first,
+  // however long the mount took.
   useEffect(() => {
     if (phase !== 'city') return
-    const timer = window.setTimeout(goToEntrance, 120)
-    return () => window.clearTimeout(timer)
-  }, [phase, goToEntrance])
+    let raf = 0
+    let timer = 0
+    raf = requestAnimationFrame(() => {
+      raf = requestAnimationFrame(() => {
+        timer = window.setTimeout(() => setFlash(false), 90)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(raf)
+      window.clearTimeout(timer)
+    }
+  }, [phase])
+
+  // Arrive already looking at the whole city, gate in the foreground.
+  //
+  // Placed rather than flown, and on the frame the city mounts rather than
+  // 120ms later: the old sequence let you see the default camera position for
+  // a moment, then dragged you across the map while several hundred buildings
+  // were still being built, which is what read as a stutter followed by the
+  // view sliding into place.
+  useEffect(() => {
+    if (phase !== 'city') return
+    overview(true)
+  }, [phase, overview])
 
   // Hovering off a building briefly keeps the label alive so moving between
   // two neighbouring buildings does not flicker.
@@ -396,7 +452,15 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
         // A near plane of 1 rather than the 0.1 default: the far plane is
         // hundreds of units out, and that ratio is what starved the depth
         // buffer and set the roads and grass flickering against each other.
-        camera={{ position: [0, 3.4, 38], fov: 50, near: 4, far: span * 3 }}
+        //
+        // The far plane has to clear the whole valley, not just the city. At
+        // span * 3 it fell *inside* the outer mountain ring (centred at
+        // span * 3 itself, on a snowfield of radius span * 4.4), so pulling
+        // back cut the peaks off along a hard circular edge instead of
+        // letting the fog carry them away. Raising it costs almost no depth
+        // precision -- resolution at a given distance is set by the near
+        // plane, and the city is never more than a couple of spans off.
+        camera={{ position: [0, 3.4, 38], fov: 50, near: 4, far: span * 5.6 }}
         onPointerMissed={() => phase === 'city' && setHovered(null)}
       >
         {phase !== 'city' ? (
@@ -413,6 +477,7 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
           zoom={zoom}
           hoverAnchor={hoverAnchor}
           cameraPose={cameraPose}
+          bearingDrag={bearingDrag}
           briefingOpen={briefingOpen}
           timeMode={timeMode}
           touring={touring}
@@ -582,7 +647,12 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
       </div>
 
       <div className="hud hud--bottom">
-        <NavGlobe pose={cameraPose} onBearing={lookFrom} onOverview={lookDown} />
+        <NavGlobe
+          pose={cameraPose}
+          onBearing={lookFrom}
+          onOverview={lookDown}
+          bearingDrag={bearingDrag}
+        />
 
         {showMinimap && (
           <Minimap

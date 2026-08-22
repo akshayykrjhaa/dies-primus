@@ -1,7 +1,8 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 
 import type { Building } from '../../types'
+import { useLightRamp } from './useLightRamp'
 
 /**
  * The shape catalogue.
@@ -32,15 +33,59 @@ function rand(seed: number, index: number): number {
 }
 
 /**
+ * The four facades of a box, and the rotation that turns a plane to face out
+ * of each one.
+ *
+ * This table is the fix for the long-standing "half the windows are missing"
+ * bug. Every pane used to be placed with a `rotY` of either 0 or PI/2 and
+ * then pushed to whichever side of the building it belonged on -- but a
+ * PlaneGeometry's normal is +Z, so a plane at -w/2 rotated by *+*PI/2 has its
+ * normal pointing at +X, straight into the building. Materials are front-side
+ * by default, so those panes were backface-culled: the -X and -Z facades of
+ * every building in the city rendered as blank walls, and the two that did
+ * show were lit as if they faced the wrong way. Each face now gets the
+ * rotation that actually points its normal outward.
+ */
+const FACES = [
+  { rotY: 0, axis: 'z' as const, sign: 1 },
+  { rotY: Math.PI, axis: 'z' as const, sign: -1 },
+  { rotY: Math.PI / 2, axis: 'x' as const, sign: 1 },
+  { rotY: -Math.PI / 2, axis: 'x' as const, sign: -1 },
+]
+
+/**
+ * How far a pane floats off its wall. Big enough to clear the shell at any
+ * distance the camera can reach, small enough to read as flush glazing.
+ */
+const PANE_OFFSET = 0.06
+
+/**
+ * One pane, shared by every window in the city.
+ *
+ * This used to be a fresh `PlaneGeometry` per building. The geometry is
+ * identical every time, so a 300-building city was uploading three hundred
+ * copies of the same four vertices to the GPU during the single frame the
+ * city mounts -- a large part of the hitch on arriving. Never disposed: it
+ * outlives any one building by design.
+ */
+const PANE_GEOMETRY = new THREE.PlaneGeometry(1, 1)
+
+/** The wall colour a lit pane takes on, behind its emissive glow. */
+const WINDOW_WARM = new THREE.Color('#8A7048')
+
+/**
  * A real grid of windows across all four facades.
  *
- * The previous version drew horizontal bands, which read as stripes rather
- * than as a building. This lays out one small pane per window on a single
- * instanced mesh, so a tower with 90 windows still costs one draw call — fewer
- * than the two dozen band meshes it replaces.
+ * One small pane per window on a pair of instanced meshes, so a tower with
+ * ninety windows still costs two draw calls. Which panes are lit is seeded
+ * from the building, so a given file always has the same windows on.
  *
- * Which panes are lit is seeded from the building, so a given file always has
- * the same windows on, and they only light up after dark.
+ * The lit/unlit split is fixed by the seed and does *not* change with the
+ * time of day -- only the two colours do. Rebuilding the meshes at dusk (the
+ * old behaviour, which swapped a single "day" mesh for a lit/unlit pair the
+ * moment `night` crossed 0.08) made every facade in the city pop at once.
+ * Panes are now glass reflecting the sky by day and warm rooms by night,
+ * easing between the two, with the geometry untouched.
  */
 function Windows({
   w,
@@ -62,148 +107,226 @@ function Windows({
   /** Large cities thin the grid rather than dropping it. */
   detail?: boolean
 }) {
-  const lit = night > 0.08
-
-  const { matrices, states } = useMemo(() => {
-    const matrices: THREE.Matrix4[] = []
-    const states: number[] = []
-
+  const built = useMemo(() => {
     const storeys = Math.max(1, Math.min(floors, detail ? 26 : 12))
     const storeyHeight = h / storeys
-    const paneH = Math.min(1.5, storeyHeight * 0.52)
-    const paneW = 0.95
-
-    // Columns per face, from the real footprint.
+    const paneH = Math.min(1.2, Math.max(0.45, storeyHeight * 0.42))
+    const margin = 0.75
     const pitch = detail ? 1.7 : 2.6
-    const colsX = Math.max(1, Math.floor((w - 0.7) / pitch))
-    const colsZ = Math.max(1, Math.floor((d - 0.7) / pitch))
 
-    const place = (
-      x: number, y: number, z: number, rotY: number, sx: number,
-    ) => {
-      const matrix = new THREE.Matrix4()
-      matrix.compose(
-        new THREE.Vector3(x, y, z),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
-        new THREE.Vector3(sx, paneH, 1),
-      )
-      matrices.push(matrix)
+    /** Columns and pane width for one facade, from the wall it sits on. */
+    const layout = (wallWidth: number) => {
+      const usable = wallWidth - margin * 2
+      if (usable <= 0.4) return { cols: 0, paneW: 0, usable: 0 }
+      const cols = Math.max(1, Math.min(9, Math.floor(usable / pitch) + 1))
+      // Panes take a little under two-thirds of their column, so the wall
+      // shows between them and the grid reads as windows rather than a band.
+      const paneW = Math.min(1.05, Math.max(0.38, (usable / cols) * 0.54))
+      return { cols, paneW, usable }
     }
 
-    let index = 0
-    for (let floor = 0; floor < storeys; floor++) {
-      // Ground floor is lobby, not offices.
-      const y = (floor + 0.55) * storeyHeight
-      if (y > h - paneH * 0.6) continue
+    const alongX = layout(w)
+    const alongZ = layout(d)
 
-      for (let c = 0; c < colsZ; c++) {
-        const t = colsZ === 1 ? 0 : c / (colsZ - 1) - 0.5
-        const z = t * (d - 1.4)
-        place(w / 2 + 0.03, y, z, Math.PI / 2, paneW)
-        place(-w / 2 - 0.03, y, z, Math.PI / 2, paneW)
-        states.push(rand(seed, index++), rand(seed, index++))
-      }
-      for (let c = 0; c < colsX; c++) {
-        const t = colsX === 1 ? 0 : c / (colsX - 1) - 0.5
-        const x = t * (w - 1.4)
-        place(x, y, d / 2 + 0.03, 0, paneW)
-        place(x, y, -d / 2 - 0.03, 0, paneW)
-        states.push(rand(seed, index++), rand(seed, index++))
-      }
-    }
-    return { matrices, states }
-  }, [w, d, h, floors, seed, detail])
-
-  // Lit and unlit panes get genuinely different materials rather than one
-  // uniform emissive wash. A single material with a flat emissiveIntensity
-  // applies to every instance regardless of its vertex colour, so the "off"
-  // panes were picking up the same warm glow as the "on" ones and the whole
-  // facade blurred into one muddy wash -- exactly what made a tall building
-  // with dozens of windows read as evenly, badly lit rather than as a real
-  // building with some windows on and some off. Lit panes use a basic
-  // (unlit-by-scene) material, so they read as light sources; dark panes stay
-  // a plain Lambert material and are shaded only by the ambient/moon light,
-  // so they go properly dim at night instead of glowing along with everything
-  // else.
-  const built = useMemo(() => {
-    const geometry = new THREE.PlaneGeometry(1, 1)
-    const dark = new THREE.Color(frame)
-
-    if (!lit) {
-      const glass = new THREE.Color('#9FC4DE').lerp(dark, 0.45)
-      const material = new THREE.MeshLambertMaterial({ color: glass })
-      const day = new THREE.InstancedMesh(geometry, material, Math.max(1, matrices.length))
-      matrices.forEach((matrix, i) => day.setMatrixAt(i, matrix))
-      day.count = matrices.length
-      day.instanceMatrix.needsUpdate = true
-      day.frustumCulled = false
-      return { day, on: null as THREE.InstancedMesh | null, off: null as THREE.InstancedMesh | null }
-    }
-
-    // Lit panes are drawn with a basic material, so their brightness has to
-    // come from the colour itself -- scale it by how dark it actually is, or
-    // dusk would be as blazing as midnight.
-    const glow = 0.55 + Math.min(1, night) * 0.45
-    const warm = new THREE.Color('#FFD489').multiplyScalar(glow)
-    const warmAlt = new THREE.Color('#FFE9B8').multiplyScalar(glow)
     const onMatrices: THREE.Matrix4[] = []
-    const onColors: THREE.Color[] = []
+    const onTints: number[] = []
     const offMatrices: THREE.Matrix4[] = []
 
-    matrices.forEach((matrix, i) => {
-      // One roll per pane -- matrices and states are built 1:1 above.
-      const roll = states[i] ?? 0.5
-      if (roll > 0.38) {
-        onMatrices.push(matrix)
-        onColors.push(roll > 0.75 ? warmAlt : warm)
-      } else {
-        offMatrices.push(matrix)
+    const position = new THREE.Vector3()
+    const quaternion = new THREE.Quaternion()
+    const scale = new THREE.Vector3()
+    const euler = new THREE.Euler()
+
+    let roll = 0
+    for (let floor = 0; floor < storeys; floor++) {
+      const y = (floor + 0.5) * storeyHeight
+      // Never let a pane poke through the roof slab or below the pavement.
+      if (y + paneH / 2 > h - 0.2 || y - paneH / 2 < 0.25) continue
+
+      // Whether a *storey* is occupied, so lit rooms cluster by floor the way
+      // they do in a real building instead of scattering like static.
+      const floorLife = rand(seed + 977, floor)
+      // ...but only tall buildings have enough floors for that to read. On a
+      // two-storey shop the floor roll *was* the whole building, so a bad
+      // seed switched every window off and the little buildings sat dark all
+      // night. Short buildings decide pane by pane instead.
+      const clustering = Math.min(0.6, storeys / 22)
+
+      for (const face of FACES) {
+        const grid = face.axis === 'z' ? alongX : alongZ
+        if (grid.cols === 0) continue
+        const wallDepth = (face.axis === 'z' ? d : w) / 2 + PANE_OFFSET
+
+        for (let c = 0; c < grid.cols; c++) {
+          const t = grid.cols === 1 ? 0 : c / (grid.cols - 1) - 0.5
+          const along = t * grid.usable
+
+          if (face.axis === 'z') {
+            position.set(along, y, face.sign * wallDepth)
+          } else {
+            position.set(face.sign * wallDepth, y, along)
+          }
+          euler.set(0, face.rotY, 0)
+          quaternion.setFromEuler(euler)
+          scale.set(grid.paneW, paneH, 1)
+
+          const matrix = new THREE.Matrix4().compose(position, quaternion, scale)
+
+          const pane = rand(seed, roll++)
+          // Mostly the storey's own state, nudged per window, so a lit floor
+          // still has the odd dark room in it.
+          if (floorLife * clustering + pane * (1 - clustering) > 0.46) {
+            onMatrices.push(matrix)
+            onTints.push(0.86 + pane * 0.28)
+          } else {
+            offMatrices.push(matrix)
+          }
+        }
       }
+    }
+
+    // A last resort: whatever the seed said, no building is completely dark.
+    // One unlit window is a detail; a whole unlit building at midnight is a
+    // bug, and on a small facade the odds of it are not small.
+    if (onMatrices.length === 0 && offMatrices.length > 0) {
+      const take = Math.max(1, Math.round(offMatrices.length * 0.3))
+      for (let i = 0; i < take; i++) {
+        onMatrices.push(offMatrices.splice((i * 7) % offMatrices.length, 1)[0])
+        onTints.push(0.9 + (i % 3) * 0.1)
+      }
+    }
+
+    const geometry = PANE_GEOMETRY
+
+    // Both sets are *shaded* materials. The lit set used to be an unlit
+    // MeshBasicMaterial, which meant its panes glowed in broad daylight --
+    // the lights read as permanently on. A Lambert material with its
+    // emissive ramped from zero is lit glass by day and a lit room after
+    // dark, which is the behaviour the day/night toggle is supposed to show.
+    //
+    // polygonOffset nudges the panes' depth values towards the camera in
+    // screen space, which holds at every distance -- unlike the fixed world
+    // offset alone, whose margin shrinks in the depth buffer as the far side
+    // of a large city recedes.
+    const onMaterial = new THREE.MeshLambertMaterial({
+      color: new THREE.Color('#C4DDEF'),
+      emissive: new THREE.Color('#FFC97A'),
+      emissiveIntensity: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -2,
+    })
+    const offMaterial = new THREE.MeshLambertMaterial({
+      color: new THREE.Color('#7E9BB4'),
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -2,
     })
 
-    let on: THREE.InstancedMesh | null = null
-    if (onMatrices.length > 0) {
-      const material = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false })
-      on = new THREE.InstancedMesh(geometry, material, onMatrices.length)
-      onMatrices.forEach((matrix, i) => {
-        on!.setMatrixAt(i, matrix)
-        on!.setColorAt(i, onColors[i])
+    // How far each set fades when the city dims around a focused building.
+    // Windows hold on much harder than the walls do: dimming every material to
+    // the same value multiplied the panes down until they vanished, and a
+    // building with no windows reads as a blank slab rather than a faded one.
+    // Lit panes hold on hardest of all, so the lights stay lit as the city
+    // recedes behind them. See `DIM_FLOOR` in Building.tsx.
+    onMaterial.userData.dimTo = 0.46
+    offMaterial.userData.dimTo = 0.36
+
+    const pack = (
+      matrices: THREE.Matrix4[],
+      material: THREE.Material,
+      tints: number[] | null,
+    ) => {
+      if (matrices.length === 0) return null
+      const mesh = new THREE.InstancedMesh(geometry, material, matrices.length)
+      // Windows draw after the shells. Combined with depth writing (kept on
+      // even while faded, see Building.tsx) this is what makes a translucent
+      // building correct from every angle: the near wall lays down depth, the
+      // far wall and far-side panes are backface-culled, and the near panes
+      // sit on top where they belong.
+      mesh.renderOrder = 1
+      const color = new THREE.Color()
+      matrices.forEach((matrix, i) => {
+        mesh.setMatrixAt(i, matrix)
+        // instanceColor multiplies the material colour, so a grey tint here
+        // varies brightness per pane while leaving the hue to the material --
+        // which is what lets the time of day animate without touching these.
+        if (tints) mesh.setColorAt(i, color.setScalar(tints[i]))
       })
-      on.count = onMatrices.length
-      on.instanceMatrix.needsUpdate = true
-      if (on.instanceColor) on.instanceColor.needsUpdate = true
-      on.frustumCulled = false
+      mesh.instanceMatrix.needsUpdate = true
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+      mesh.frustumCulled = false
+      return mesh
     }
 
-    let off: THREE.InstancedMesh | null = null
-    if (offMatrices.length > 0) {
-      const material = new THREE.MeshLambertMaterial({ color: dark })
-      off = new THREE.InstancedMesh(geometry, material, offMatrices.length)
-      offMatrices.forEach((matrix, i) => off!.setMatrixAt(i, matrix))
-      off.count = offMatrices.length
-      off.instanceMatrix.needsUpdate = true
-      off.frustumCulled = false
+    return {
+      on: pack(onMatrices, onMaterial, onTints),
+      off: pack(offMatrices, offMaterial, null),
+      onMaterial,
+      offMaterial,
     }
+  }, [w, d, h, floors, seed, detail])
 
-    return { day: null as THREE.InstancedMesh | null, on, off }
-  }, [matrices, states, lit, frame, night])
+  // Time of day is a material update, not a rebuild -- rebuilding the meshes
+  // at dusk made every facade in the city pop at once. The ramp eases per
+  // frame, so flipping to night mode fades the windows up alongside the sky
+  // instead of switching them on a frame ahead of it.
+  const frameColor = useMemo(() => new THREE.Color(frame), [frame])
+  useLightRamp(night, (lit) => {
+    // By day both sets are glass, differing only in shade, so a facade reads
+    // as windows rather than as a grid of lamps. `lit` is flat zero right
+    // through daylight, so nothing glows before dusk.
+    built.onMaterial.color.set('#C4DDEF').lerp(WINDOW_WARM, lit * 0.42)
+    // The glow is stored as well as applied. Focus mode scales it back by the
+    // same amount it fades the building (see Building.tsx): opacity alone
+    // cannot dim an emissive surface, so dimmed buildings kept shouting their
+    // lit windows at full strength while their walls receded behind them.
+    built.onMaterial.userData.emissiveBase = lit * 1.05
+    built.onMaterial.emissiveIntensity =
+      lit * 1.05 * ((built.onMaterial.userData.dimFactor as number) ?? 1)
+
+    // Unlit panes just go darker as the sky does; they never glow.
+    built.offMaterial.color.set('#8FAEC8').lerp(frameColor, 0.3 + lit * 0.42)
+  }, built)
+
+  useEffect(
+    () => () => {
+      // The geometry is shared and deliberately outlives this building.
+      built.onMaterial.dispose()
+      built.offMaterial.dispose()
+    },
+    [built],
+  )
 
   return (
     <>
-      {built.day && <primitive object={built.day} />}
       {built.on && <primitive object={built.on} />}
       {built.off && <primitive object={built.off} />}
     </>
   )
 }
 
-/** Vertical glazing strips for towers. */
+/**
+ * Corner pilasters for towers.
+ *
+ * These used to be two slabs laid flat against the middle of the -X and +X
+ * walls, which is exactly where that facade's window grid runs -- harmless
+ * while those panes were invisible, but a stack of half-buried windows the
+ * moment they rendered. Moving them to the four vertical edges gives a tower
+ * the same banded silhouette without ever crossing a pane.
+ */
 function Mullions({ w, d, h, color }: { w: number; d: number; h: number; color: string }) {
+  const corners: Array<[number, number]> = [
+    [-1, -1],
+    [-1, 1],
+    [1, -1],
+    [1, 1],
+  ]
   return (
     <>
-      {[-1, 1].map((side) => (
-        <mesh key={side} position={[(side * w) / 2 + side * 0.02, h / 2, 0]}>
-          <boxGeometry args={[0.06, h * 0.9, d * 0.62]} />
+      {corners.map(([sx, sz]) => (
+        <mesh key={`${sx}:${sz}`} position={[(sx * w) / 2, h / 2, (sz * d) / 2]} castShadow>
+          <boxGeometry args={[0.22, h * 0.96, 0.22]} />
           <meshLambertMaterial color={color} />
         </mesh>
       ))}
@@ -308,14 +431,19 @@ export function Shell({ building, detail, night = 0 }: ShellProps) {
             <boxGeometry args={[w, h, d]} />
             <meshLambertMaterial color={color} />
           </mesh>
+          {/* Apartments were the largest archetype with no glazing at all, so
+              a whole residential district read as a field of blank slabs. */}
+          <Windows w={w} d={d} h={h} floors={floors} seed={seed} night={night} frame={accent} detail={detail} />
+          {/* Balconies sit at the foot of each storey, clear of that floor's
+              windows, and stand far enough proud not to bury them. */}
           {detail &&
             Array.from({ length: Math.min(floors, 7) }).map((_, i) => (
               <mesh
                 key={i}
-                position={[0, (i + 0.75) * (h / Math.max(1, floors)), d / 2 + 0.22]}
+                position={[0, (i + 0.14) * (h / Math.max(1, floors)) + 0.3, d / 2 + 0.34]}
                 castShadow
               >
-                <boxGeometry args={[w * 0.72, 0.5, 0.45]} />
+                <boxGeometry args={[w * 0.72, 0.42, 0.62]} />
                 <meshLambertMaterial color={roofColor} />
               </mesh>
             ))}
@@ -336,6 +464,15 @@ export function Shell({ building, detail, night = 0 }: ShellProps) {
             <boxGeometry args={[w, wallH, d]} />
             <meshLambertMaterial color={color} />
           </mesh>
+          {/* A house gets two panes a side rather than a grid, which is all
+              its 4-unit walls have room for -- but a street of unlit cottages
+              was the darkest thing in the city after sunset. Gated on
+              `detail`, with the other small archetypes: glazing every cottage
+              in a 300-building city doubles the window draw calls to add
+              detail nobody is close enough to see. */}
+          {detail && (
+            <Windows w={w} d={d} h={wallH} floors={1} seed={seed} night={night} frame="#6E5A46" detail={detail} />
+          )}
           {/* gable roof */}
           <mesh position={[0, wallH + (h - wallH) / 2, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
             <coneGeometry args={[Math.max(w, d) * 0.78, h - wallH, 4]} />
@@ -368,6 +505,22 @@ export function Shell({ building, detail, night = 0 }: ShellProps) {
             <boxGeometry args={[w * 0.72, 1.7, 0.08]} />
             <meshLambertMaterial color="#BFE3F2" />
           </mesh>
+          {/* The flat above the shop. Offset so the grid starts above the
+              awning and the shopfront rather than behind them. */}
+          {detail && h > 4.4 && (
+            <group position={[0, 3.4, 0]}>
+              <Windows
+                w={w}
+                d={d}
+                h={h - 3.4}
+                floors={Math.max(1, floors - 1)}
+                seed={seed + 2207}
+                night={night}
+                frame={accent}
+                detail={detail}
+              />
+            </group>
+          )}
           <Sign w={w} d={d} y={h - 0.6} color={accent} />
           <mesh position={[0, h + 0.12, 0]} castShadow>
             <boxGeometry args={[w * 1.04, 0.24, d * 1.04]} />
@@ -399,6 +552,7 @@ export function Shell({ building, detail, night = 0 }: ShellProps) {
             <boxGeometry args={[w, baseH, d]} />
             <meshLambertMaterial color={color} />
           </mesh>
+          <Windows w={w} d={d} h={baseH} floors={Math.max(2, floors)} seed={seed} night={night} frame="#9A8258" detail={detail} />
           {/* portico columns */}
           {detail &&
             [-0.34, -0.12, 0.12, 0.34].map((offset) => (
@@ -511,6 +665,22 @@ export function Shell({ building, detail, night = 0 }: ShellProps) {
             <boxGeometry args={[w, h, d]} />
             <meshLambertMaterial color={color} />
           </mesh>
+          {/* The bays take the ground floor, so the glazing starts above
+              them rather than behind them. */}
+          {detail && h > 4.2 && (
+            <group position={[0, 3.0, 0]}>
+              <Windows
+                w={w}
+                d={d}
+                h={h - 3.0}
+                floors={Math.max(1, floors - 1)}
+                seed={seed + 5303}
+                night={night}
+                frame="#7E2C31"
+                detail={detail}
+              />
+            </group>
+          )}
           {/* engine bay doors */}
           {[-0.24, 0.24].map((offset) => (
             <mesh key={offset} position={[w * offset, 1.5, d / 2 + 0.05]}>
@@ -538,6 +708,23 @@ export function Shell({ building, detail, night = 0 }: ShellProps) {
             <boxGeometry args={[w, h, d]} />
             <meshLambertMaterial color={color} />
           </mesh>
+          {/* Factories are lit from a clerestory band high on the wall, not
+              from a grid of office windows -- one storey's worth of panes at
+              the top of the shed. */}
+          {detail && h > 3.2 && (
+            <group position={[0, h - 2.4, 0]}>
+              <Windows
+                w={w}
+                d={d}
+                h={2.4}
+                floors={1}
+                seed={seed + 8117}
+                night={night}
+                frame="#4A525C"
+                detail={detail}
+              />
+            </group>
+          )}
           {/* sawtooth roof */}
           {[-0.28, 0, 0.28].map((offset, i) => (
             <mesh

@@ -176,26 +176,116 @@ def build_city(
         )
 
     # --- shelf-pack plots into city blocks -------------------------------
+    #
+    # Two passes. The first is a plain greedy fill, used only to decide how
+    # many rows the city wants. The second lays the plots out into exactly
+    # that many rows, aiming each row at the average of what is still left to
+    # place, which self-corrects as it goes.
+    #
+    # Greedy alone left a stubby final row -- often a fifth the width of the
+    # others -- because it fills every row to the brim and dumps the remainder
+    # at the end. That ragged edge is what produced streets with blocks along
+    # one side and open snow along the other: legitimate boundary roads, but
+    # they read as roads running off to nowhere. Balanced rows give the city a
+    # tidy outline and the road network something to serve on both sides.
     total_area = sum(p["width"] * p["depth"] for p in plots) or 1.0
-    target_width = math.sqrt(total_area) * 1.5
+    total_run = sum(p["width"] for p in plots) + road * max(0, len(plots) - 1)
 
-    shelves: list[dict[str, Any]] = []
-    cursor_x, cursor_z, shelf_depth, city_width = 0.0, 0.0, 0.0, 0.0
-    shelf_start = 0
-    for index, plot in enumerate(plots):
-        if cursor_x > 0 and cursor_x + plot["width"] > target_width:
-            shelves.append({"z": cursor_z, "depth": shelf_depth, "from": shelf_start, "to": index})
-            cursor_x = 0.0
-            cursor_z += shelf_depth + road
-            shelf_depth = 0.0
-            shelf_start = index
-        plot["x"] = cursor_x
-        plot["z"] = cursor_z
-        cursor_x += plot["width"] + road
-        shelf_depth = max(shelf_depth, plot["depth"])
-        city_width = max(city_width, cursor_x - road)
-    shelves.append({"z": cursor_z, "depth": shelf_depth, "from": shelf_start, "to": len(plots)})
-    city_depth = cursor_z + shelf_depth
+    def greedy_rows(target: float) -> int:
+        count, x = 1, 0.0
+        for plot in plots:
+            if x > 0 and x + plot["width"] > target:
+                count += 1
+                x = 0.0
+            x += plot["width"] + road
+        return count
+
+    row_count = max(1, min(len(plots), greedy_rows(math.sqrt(total_area) * 1.5)))
+
+    def balanced_rows(count: int) -> list[dict[str, Any]]:
+        """Split the plots into `count` rows, minimising the widest row.
+
+        This is the classic linear-partition problem, and it is worth solving
+        exactly rather than approximating: greedy fills every row to the brim
+        and leaves a stub, while aiming at a running average tends to shunt
+        the surplus into the final row instead. Either way the city comes out
+        L-shaped, and an L-shaped city has streets with blocks along one side
+        and open snow along the other.
+
+        Plot order is preserved -- districts stay adjacent to their siblings --
+        so this is a partition into contiguous runs, not a repacking. The
+        input is districts rather than files, so `n` is small and the O(n^2 *
+        rows) table costs nothing.
+        """
+        count = max(1, min(count, len(plots)))
+        n = len(plots)
+
+        # run[i][j] is the width of plots[i:j], roads between them included.
+        prefix = [0.0]
+        for plot in plots:
+            prefix.append(prefix[-1] + plot["width"])
+
+        def run(i: int, j: int) -> float:
+            if j <= i:
+                return 0.0
+            return prefix[j] - prefix[i] + road * (j - i - 1)
+
+        infinity = float("inf")
+        # best[r][i]: the narrowest achievable widest-row, laying out
+        # plots[i:] into exactly r rows.
+        best = [[infinity] * (n + 1) for _ in range(count + 1)]
+        cut = [[n] * (n + 1) for _ in range(count + 1)]
+        best[0][n] = 0.0
+        for rows_left in range(1, count + 1):
+            for i in range(n):
+                # Leave at least one plot for each row that follows.
+                for j in range(i + 1, n - (rows_left - 1) + 1):
+                    tail = best[rows_left - 1][j]
+                    if tail == infinity:
+                        continue
+                    widest = run(i, j)
+                    if tail > widest:
+                        widest = tail
+                    if widest < best[rows_left][i]:
+                        best[rows_left][i] = widest
+                        cut[rows_left][i] = j
+
+        rows: list[dict[str, Any]] = []
+        index = 0
+        for rows_left in range(count, 0, -1):
+            end_index = cut[rows_left][index] if best[rows_left][index] < infinity else n
+            members = plots[index:end_index]
+            rows.append(
+                {
+                    "depth": max((m["depth"] for m in members), default=0.0),
+                    "from": index,
+                    "to": end_index,
+                    "width": run(index, end_index),
+                }
+            )
+            index = end_index
+        if index < n:  # never expected; keep every plot regardless
+            last = rows[-1]
+            last["to"] = n
+            last["width"] = run(last["from"], n)
+            last["depth"] = max(m["depth"] for m in plots[last["from"] : n])
+        return rows
+
+    shelves = balanced_rows(row_count)
+
+    # Lay the rows out and give every plot its coordinates.
+    cursor_z, city_width = 0.0, 0.0
+    for shelf in shelves:
+        cursor_x = 0.0
+        for plot in plots[shelf["from"] : shelf["to"]]:
+            plot["x"] = cursor_x
+            plot["z"] = cursor_z
+            cursor_x += plot["width"] + road
+        shelf["z"] = cursor_z
+        shelf["width"] = max(0.0, cursor_x - road)
+        cursor_z += shelf["depth"] + road
+        city_width = max(city_width, shelf["width"])
+    city_depth = cursor_z - road
 
     offset_x = city_width / 2
     offset_z = city_depth / 2
@@ -269,12 +359,15 @@ def build_city(
             floors = archetypes.floors_for(archetype, loc, seed, scale)
             wall = archetypes.palette_for(archetype, seed)
 
-            # Footprint wobbles a little per building so terraces are not
-            # perfectly aligned, but never enough to overflow its cell.
-            jitter = 0.9 + ((seed >> 3) % 22) / 100.0
-            width = round(min(CELL - 1.6, archetype.base_width * jitter), 2)
-            depth = round(min(CELL - 1.6, archetype.base_depth * jitter), 2)
-            height = round(max(2.2, floors * FLOOR_HEIGHT), 2)
+            # Footprint grows with the file as well as the storey count, so a
+            # low-rise archetype (a warehouse tops out at three floors) still
+            # shows the difference between a 20-line file and a 2000-line one.
+            # It is capped to the cell so a plot can never overflow into the
+            # street, and floored so a stub is still a building.
+            raw_width, raw_depth = archetypes.footprint_for(archetype, loc, seed, scale)
+            width = round(min(CELL - 1.6, max(2.6, raw_width)), 2)
+            depth = round(min(CELL - 1.6, max(2.6, raw_depth)), 2)
+            height = round(max(2.4, floors * FLOOR_HEIGHT), 2)
 
             language_counts[detected.language] = language_counts.get(detected.language, 0) + 1
             type_counts[archetype.label] = type_counts.get(archetype.label, 0) + 1
@@ -394,18 +487,29 @@ def build_city(
     # --- the road network -------------------------------------------------
     roads: list[dict[str, Any]] = []
 
-    # Avenues: one between every pair of shelves, plus the outer ring. Each
-    # runs the width of the city plus half a road at either end, so it meets
-    # the perimeter streets exactly instead of trailing off into the grass.
-    avenue_zs = [-offset_z - road / 2]
-    for shelf in shelves:
-        avenue_zs.append(shelf["z"] + shelf["depth"] + road / 2 - offset_z)
-    for z in avenue_zs:
+    # Avenues: one between every pair of shelves, plus the outer ring.
+    #
+    # Each is cut to the shelves it actually borders rather than to the width
+    # of the whole city. Running every avenue the full city width meant the
+    # rows that happened to be short -- the last one usually is -- got a road
+    # continuing a hundred units past the final building and stopping in open
+    # snow, which is what made the outskirts look like an unfinished map.
+    # Length still carries half a road at either end so an avenue meets the
+    # perimeter streets exactly instead of stopping short of them.
+    for index in range(len(shelves) + 1):
+        above = shelves[index - 1] if index > 0 else None
+        below = shelves[index] if index < len(shelves) else None
+        reach = max(shelf["width"] for shelf in (above, below) if shelf)
+        z = (
+            -offset_z - road / 2
+            if above is None
+            else above["z"] + above["depth"] + road / 2 - offset_z
+        )
         roads.append(
             {
-                "x": 0.0,
+                "x": round(reach / 2 - offset_x, 2),
                 "z": round(z, 2),
-                "length": round(city_width + road, 2),
+                "length": round(reach + road, 2),
                 "width": round(road, 2),
                 "axis": "x",
             }
@@ -443,7 +547,16 @@ def build_city(
         lamps = max(2, int(segment["length"] / 26))
         for i in range(lamps):
             s = archetypes.seed_of(f"road:{index}:{i}")
-            x = -segment["length"] / 2 + (i + 0.5) * (segment["length"] / lamps)
+            # Relative to the segment's own centre, *then* moved onto it.
+            # Avenues used to be centred on x = 0 so the offset could be
+            # omitted without anyone noticing; once they were cut to the
+            # shelves they serve, that left lamps and traffic stranded out on
+            # the open snow where the road no longer went.
+            x = (
+                segment["x"]
+                - segment["length"] / 2
+                + (i + 0.5) * (segment["length"] / lamps)
+            )
             props.append(
                 {
                     "type": "lamp",

@@ -12,6 +12,18 @@ import * as THREE from 'three'
 export interface Daylight {
   /** Normalised sun direction; y goes negative once it has set. */
   sun: THREE.Vector3
+  /**
+   * Where the key light actually comes from: the sun by day, easing to the
+   * moon after dark. The sun's own vector drops below the horizon at night,
+   * and the scene used to clamp it to a token height, which raked the city
+   * from almost ground level and left every north face black. The moon sits
+   * genuinely high, so night lighting comes from above like moonlight does.
+   */
+  key: THREE.Vector3
+  /** Where to draw the moon itself. Normalised. */
+  moon: THREE.Vector3
+  /** 0 while the moon is invisible, 1 when it is fully out. */
+  moonUp: number
   sunColor: THREE.Color
   sunIntensity: number
   skyColor: THREE.Color
@@ -38,14 +50,23 @@ interface Keyframe {
 }
 
 // Tuned against the glacier references: cold blue shadows, warm low sun.
+//
+// The night rows carry far more light than a literal night would. A city lit
+// only by its own windows is technically correct and unreadable -- the walls
+// go black, the mountains vanish and the whole scene reads as a bug. These
+// values are a "cinematic moonlit night". The balance that matters is not
+// absolute brightness but *contrast*: surfaces stay genuinely dark and cold so
+// that the warm windows, lamps and lane paint are the brightest things in the
+// frame. Pushing the ambient up until the walls were legible on their own
+// washed the whole city to flat lavender and put the lights out.
 const KEYFRAMES: Keyframe[] = [
   {
-    hour: 0, sky: '#0D1738', fog: '#16214A', sun: '#8FA6E8', sunIntensity: 0.62,
-    hemiSky: '#41558F', hemiGround: '#1A2440', hemiIntensity: 0.95, night: 1, label: 'Night',
+    hour: 0, sky: '#101A3E', fog: '#1A2652', sun: '#BFD0FF', sunIntensity: 0.95,
+    hemiSky: '#5E73B4', hemiGround: '#2B3555', hemiIntensity: 1.22, night: 1, label: 'Night',
   },
   {
-    hour: 5, sky: '#1A2A58', fog: '#243566', sun: '#9AABE0', sunIntensity: 0.7,
-    hemiSky: '#4C5F9B', hemiGround: '#1E2846', hemiIntensity: 1.0, night: 0.94, label: 'Before dawn',
+    hour: 5, sky: '#182A58', fog: '#233566', sun: '#C4D3FF', sunIntensity: 1.0,
+    hemiSky: '#6075B6', hemiGround: '#2C3757', hemiIntensity: 1.24, night: 0.94, label: 'Before dawn',
   },
   {
     hour: 7, sky: '#7E9BC8', fog: '#A9BBD8', sun: '#FFB27A', sunIntensity: 1.1,
@@ -68,12 +89,12 @@ const KEYFRAMES: Keyframe[] = [
     hemiSky: '#E7B590', hemiGround: '#4E4A55', hemiIntensity: 0.7, night: 0.4, label: 'Sunset',
   },
   {
-    hour: 21, sky: '#22305C', fog: '#2C3B6E', sun: '#8296D8', sunIntensity: 0.66,
-    hemiSky: '#465893', hemiGround: '#1B2440', hemiIntensity: 0.98, night: 0.92, label: 'Dusk',
+    hour: 21, sky: '#1D2E5E', fog: '#293A70', sun: '#B5C6F8', sunIntensity: 0.92,
+    hemiSky: '#5C71B2', hemiGround: '#2A3453', hemiIntensity: 1.2, night: 0.92, label: 'Dusk',
   },
   {
-    hour: 24, sky: '#0D1738', fog: '#16214A', sun: '#8FA6E8', sunIntensity: 0.62,
-    hemiSky: '#41558F', hemiGround: '#1A2440', hemiIntensity: 0.95, night: 1, label: 'Night',
+    hour: 24, sky: '#101A3E', fog: '#1A2652', sun: '#BFD0FF', sunIntensity: 0.95,
+    hemiSky: '#5E73B4', hemiGround: '#2B3555', hemiIntensity: 1.22, night: 1, label: 'Night',
   },
 ]
 
@@ -99,10 +120,26 @@ export const PINNED_HOURS: Record<Exclude<TimeMode, 'auto'>, number> = {
   night: 1,
 }
 
-/** Resolves the hour a mode should render at. */
+/** The window of the day during which "Day" simply means "now". */
+const DAYLIGHT_FROM = 8
+const DAYLIGHT_TO = 17
+
+/**
+ * Resolves the hour a mode should render at.
+ *
+ * `day` used to pin a flat 13:00, so switching to Day at half past three
+ * visibly *changed* the lighting even though it was already broad daylight --
+ * the sun jumped back across the sky. Day now keeps the visitor's own hour
+ * whenever that hour is genuinely daylit, and only falls back to midday when
+ * it would otherwise have nothing to show.
+ */
 export function hoursForMode(mode: TimeMode, date: Date = new Date()): number {
   if (mode === 'auto') return localHours(date)
-  return PINNED_HOURS[mode]
+  if (mode === 'day') {
+    const now = localHours(date)
+    return now >= DAYLIGHT_FROM && now <= DAYLIGHT_TO ? now : PINNED_HOURS.day
+  }
+  return PINNED_HOURS.night
 }
 
 /** `?hour=21` pins the time of day, for demos and for checking the lighting. */
@@ -133,8 +170,28 @@ export function daylight(hours: number = localHours()): Daylight {
     0.42 + Math.cos(dayAngle) * 0.25,
   ).normalize()
 
+  // The moon rides the opposite half of the arc from the sun and never sits
+  // low: a high key light is what stops a night city from being a silhouette.
+  const moonAngle = dayAngle + Math.PI
+  // Negative Z is north, which is the way the establishing shot faces: put the
+  // moon over the range behind the city so it is actually in frame when you
+  // arrive at night, rather than hanging behind the camera where only its
+  // light ever reached the scene.
+  const moon = new THREE.Vector3(
+    Math.cos(moonAngle) * 0.5,
+    Math.max(0.58, Math.sin(moonAngle)),
+    -0.6 + Math.cos(moonAngle) * 0.15,
+  ).normalize()
+
+  const night = THREE.MathUtils.lerp(from.night, to.night, t)
+  const moonUp = THREE.MathUtils.smoothstep(night, 0.2, 0.62)
+  const key = sun.clone().lerp(moon, moonUp).normalize()
+
   return {
     sun,
+    key,
+    moon,
+    moonUp,
     sunColor: mixColor(from.sun, to.sun, t),
     sunIntensity: THREE.MathUtils.lerp(from.sunIntensity, to.sunIntensity, t),
     skyColor: mixColor(from.sky, to.sky, t),
@@ -142,9 +199,25 @@ export function daylight(hours: number = localHours()): Daylight {
     hemiSky: mixColor(from.hemiSky, to.hemiSky, t),
     hemiGround: mixColor(from.hemiGround, to.hemiGround, t),
     hemiIntensity: THREE.MathUtils.lerp(from.hemiIntensity, to.hemiIntensity, t),
-    night: THREE.MathUtils.lerp(from.night, to.night, t),
+    night,
     label: t < 0.5 ? from.label : to.label,
   }
+}
+
+/**
+ * How lit the city's own lights are, 0..1, from the scene's `night` value.
+ *
+ * Every artificial light in the scene rides this one ramp -- window panes and
+ * street lamps -- so they come on together instead of at separately-tuned
+ * thresholds. It is flat zero through the day, so switching to night mode is a
+ * visible event rather than something already half-applied at noon, and it
+ * eases rather than snapping so the change reads as dusk falling.
+ *
+ * `night` is 0 at midday, ~0.06 mid-afternoon, 0.4 at sunset and 1 in the dead
+ * of night, so the shoulder sits between afternoon and sunset.
+ */
+export function lampsOn(night: number): number {
+  return THREE.MathUtils.smoothstep(night, 0.14, 0.55)
 }
 
 /** "14:32 · Afternoon" for the HUD clock. */

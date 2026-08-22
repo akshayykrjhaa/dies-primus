@@ -33,8 +33,12 @@ export function Entrance({ repo, position, cityDepth, onOpenBriefing, briefingOp
 
   const scale = position.scale ?? 1
   const roadWidth = position.road ?? 11.5
-  // Reach from the plaza back toward the city's outer avenue, no further.
-  const roadLength = Math.max(22, cityDepth * 0.12 + 24) * (0.6 + scale * 0.4)
+  // Reach from the plaza to the city's outer avenue and stop there. The old
+  // formula was a guess from the city's depth that happened to overshoot --
+  // it ran the approach a further twenty-odd units *into* the grid, laying a
+  // second road on top of the street already there. The southern avenue sits
+  // half a road beyond the plots, so that edge is exactly `cityDepth / 2`.
+  const roadLength = Math.max(12, position.z - cityDepth / 2)
   const plazaRadius = 6.5 + 5 * scale
   // The portal's footing sits ~11 units below its origin at scale 1.
   const portalY = 11 * scale + 0.24

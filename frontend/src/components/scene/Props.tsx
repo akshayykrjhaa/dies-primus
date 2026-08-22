@@ -3,6 +3,7 @@ import * as THREE from 'three'
 
 import { LAYERS } from '../../lib/layers'
 import type { Prop } from '../../types'
+import { useLightRamp } from './useLightRamp'
 
 /**
  * Street furniture: trees, palms, lamps, parked vehicles, park lawns and the
@@ -90,6 +91,9 @@ function Palms({ items }: { items: Prop[] }) {
   )
 }
 
+/** The colour a lamp head takes when it is lit. */
+const LAMP_LIT = new THREE.Color('#FFF0B8')
+
 function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
   const posts = useMemo(
     () => items.map((p) => compose(p.x, 2.4, p.z, p.rotation, 1, 1, 1)),
@@ -103,15 +107,20 @@ function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
   const headGeo = useMemo(() => new THREE.BoxGeometry(0.9, 0.22, 0.34), [])
 
   const postMesh = useInstanced(posts, postGeo, '#9AA3AE', false)
-  // The head is a dull fitting by day and a lit lamp after dark.
-  const headMesh = useInstanced(heads, headGeo, night > 0.15 ? '#FFF0B8' : '#C9CEd6', false)
-  useMemo(() => {
+  // The head is a dull fitting by day and a lit lamp after dark. The colour
+  // is held constant so the mesh is not rebuilt as the light changes; only
+  // the emissive is animated, and it ramps continuously rather than snapping
+  // at a threshold, so dusk fades the lamps up instead of flicking them on.
+  const headMesh = useInstanced(heads, headGeo, '#E4E2DA', false)
+  useLightRamp(night, (glow) => {
     const material = headMesh.material as THREE.MeshLambertMaterial
-    material.emissive = new THREE.Color(night > 0.15 ? '#FFD98A' : '#000000')
-    material.emissiveIntensity = night * 2.2
-    material.needsUpdate = true
-    return null
-  }, [headMesh, night])
+    material.emissive.set('#FFD98A')
+    material.emissiveIntensity = glow * 1.9
+    material.color.set('#C9CED6').lerp(LAMP_LIT, glow)
+    // The pool of light under the lamp rides the very same value, so the bulb
+    // and its pool can never be seen to come on at different moments.
+    ;(poolMesh.material as THREE.MeshBasicMaterial).opacity = glow * 0.5
+  }, headMesh)
 
   // A pool of light on the pavement under each lamp. Real point lights would
   // be dozens of extra shadow-casting sources; an additive disc costs one
@@ -122,18 +131,40 @@ function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
       matrix.compose(
         new THREE.Vector3(p.x, LAYERS.lampPool, p.z),
         new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0)),
-        new THREE.Vector3(7, 7, 1),
+        new THREE.Vector3(6.4, 6.4, 1),
       )
       return matrix
     }),
     [items],
   )
   const poolGeo = useMemo(() => new THREE.CircleGeometry(1, 20), [])
+
+  // A flat disc of colour reads as a plate lying on the road, however faint --
+  // which is exactly what these looked like. The falloff texture makes the
+  // pool bright under the lamp and nothing at its edge, so it reads as light
+  // landing on the ground.
+  const poolTexture = useMemo(() => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 64
+    const ctx = canvas.getContext('2d')!
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
+    gradient.addColorStop(0, 'rgba(255, 226, 168, 1)')
+    gradient.addColorStop(0.45, 'rgba(255, 214, 140, 0.42)')
+    gradient.addColorStop(1, 'rgba(255, 205, 120, 0)')
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, 64, 64)
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    return texture
+  }, [])
+
   const poolMesh = useMemo(() => {
     const material = new THREE.MeshBasicMaterial({
+      map: poolTexture,
       color: '#FFD98A',
       transparent: true,
-      opacity: Math.max(0, night - 0.12) * 0.3,
+      opacity: 0,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       toneMapped: false,
@@ -144,13 +175,16 @@ function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
     mesh.instanceMatrix.needsUpdate = true
     mesh.frustumCulled = false
     return mesh
-  }, [poolGeo, pools, night])
+  }, [poolGeo, poolTexture, pools])
 
   return (
     <group>
       <primitive object={postMesh} />
       <primitive object={headMesh} />
-      {night > 0.12 && <primitive object={poolMesh} />}
+      {/* Always mounted: the ramp writes its opacity, and unmounting it at a
+          threshold was itself a pop. At zero opacity it costs one culled
+          draw. */}
+      <primitive object={poolMesh} />
     </group>
   )
 }
