@@ -1,4 +1,4 @@
-import type { AuthUser, CityData, JobSnapshot, RecentCity } from '../types'
+import type { AuthUser, CityData, JobSnapshot, ProfileData, RecentCity } from '../types'
 
 const BASE = '/api'
 
@@ -31,9 +31,11 @@ export const GITHUB_LOGIN_URL = `${BASE}/auth/github/login`
 export const api = {
   health: () => fetch(`${BASE}/health`).then(json<Health>),
 
-  me: () => fetch(`${BASE}/auth/me`).then(json<AuthUser>),
+  me: () => fetch(`${BASE}/auth/me`, { cache: 'no-store' }).then(json<AuthUser>),
 
   logout: () => fetch(`${BASE}/auth/logout`, { method: 'POST' }).then(json<{ ok: boolean }>),
+
+  profile: () => fetch(`${BASE}/profile`, { cache: 'no-store' }).then(json<ProfileData>),
 
   recent: () =>
     fetch(`${BASE}/recent`)

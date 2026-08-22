@@ -65,7 +65,7 @@ async def analyze(request: AnalyzeRequest, http_request: Request) -> AnalyzeResp
 
     job = job_service.store.create(request.repoUrl)
 
-    session = auth_service.store.get(http_request.cookies.get(auth_service.SESSION_COOKIE))
+    session = auth_service.get_session(http_request)
     github_token = session.github_token if session else None
 
     async def runner() -> None:

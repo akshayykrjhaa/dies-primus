@@ -157,6 +157,42 @@ export interface AuthUser {
   name?: string
   avatarUrl?: string
   htmlUrl?: string
+  bio?: string
+  publicRepos?: number
+}
+
+export interface GithubRepo {
+  name: string
+  fullName: string
+  description: string
+  url: string
+  language: string
+  stars: number
+  forks: number
+  private: boolean
+  pushedAt: string
+}
+
+export interface ContributionDay {
+  date: string
+  count: number
+}
+
+export interface ProfileStats {
+  followers: number
+  following: number
+  totalCommits: number
+  totalPullRequests: number
+  totalIssues: number
+  totalContributionsLastYear: number
+  totalStars: number
+  calendar: ContributionDay[]
+}
+
+export interface ProfileData {
+  user: AuthUser
+  repos: GithubRepo[]
+  stats: ProfileStats
 }
 
 export interface RecentCity {

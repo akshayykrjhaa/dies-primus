@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..config import settings
@@ -12,11 +12,6 @@ from ..services import auth as auth_service
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 STATE_MAX_AGE = 600  # the GitHub authorize/callback round trip is seconds, not minutes
-
-
-def get_session(request: Request) -> auth_service.Session | None:
-    """Reusable for any future endpoint that wants to know who's connected."""
-    return auth_service.store.get(request.cookies.get(auth_service.SESSION_COOKIE))
 
 
 @router.get("/github/login")
@@ -74,8 +69,11 @@ async def github_callback(request: Request) -> RedirectResponse:
 
 
 @router.get("/me")
-async def me(request: Request) -> dict[str, Any]:
-    session = get_session(request)
+async def me(request: Request, response: Response) -> dict[str, Any]:
+    # Session-dependent: never let the browser (or a proxy) cache this across
+    # a login/logout, or a stale "signed in as X" can outlive the session.
+    response.headers["Cache-Control"] = "no-store"
+    session = auth_service.get_session(request)
     if session is None:
         return {"authenticated": False}
     return session.public()

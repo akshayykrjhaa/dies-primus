@@ -7,6 +7,7 @@ import { LandingCompare } from './landing/LandingCompare'
 import { LandingFeatures } from './landing/LandingFeatures'
 import { LandingHero } from './landing/LandingHero'
 import { LandingMascotIntro } from './landing/LandingMascotIntro'
+import { LandingProfile } from './landing/LandingProfile'
 import { LandingRecent } from './landing/LandingRecent'
 import { LandingStatus } from './landing/LandingStatus'
 import { LandingSteps } from './landing/LandingSteps'
@@ -117,6 +118,7 @@ export function Landing({ onAnalyze, onOpenCached, error }: Props) {
         onLogout={logout}
         authNotice={authNotice}
       />
+      {user?.authenticated && <LandingProfile key={user.login} onAnalyze={onAnalyze} />}
       <LandingMascotIntro />
       <LandingSteps />
       <LandingCompare mood={mood} />

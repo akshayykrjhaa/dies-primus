@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+from fastapi import Request
 
 from ..config import settings
 
@@ -46,6 +47,8 @@ class Session:
             "name": self.user.get("name") or self.user.get("login"),
             "avatarUrl": self.user.get("avatar_url"),
             "htmlUrl": self.user.get("html_url"),
+            "bio": self.user.get("bio") or "",
+            "publicRepos": self.user.get("public_repos", 0),
         }
 
 
@@ -78,6 +81,11 @@ class SessionStore:
 
 
 store = SessionStore()
+
+
+def get_session(request: Request) -> Session | None:
+    """Reusable by any endpoint that wants to know who's connected."""
+    return store.get(request.cookies.get(SESSION_COOKIE))
 
 
 def new_state() -> str:
