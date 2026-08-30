@@ -110,9 +110,12 @@ class Settings:
     # --- Budgets: keep a big repo from turning into a 40-minute analysis ---
     max_buildings: int = field(default_factory=lambda: _int("MAX_BUILDINGS", 320))
     _max_llm_files: int = field(default_factory=lambda: _int("MAX_LLM_FILES", 0))
+    #: -1 means "use the provider default"; 0 means "describe nothing eagerly".
+    _eager_files: int = field(default_factory=lambda: _int("EAGER_FILES", -1))
     _batch_size: int = field(default_factory=lambda: _int("LLM_BATCH_SIZE", 0))
     _max_concurrency: int = field(default_factory=lambda: _int("LLM_CONCURRENCY", 0))
     _file_char_budget: int = field(default_factory=lambda: _int("FILE_CHAR_BUDGET", 0))
+    _chat_context_chars: int = field(default_factory=lambda: _int("CHAT_CONTEXT_CHARS", 0))
 
     cache_dir: Path = field(default_factory=lambda: ROOT / ".cache")
     cors_origins: list[str] = field(
@@ -143,6 +146,22 @@ class Settings:
         return self._max_llm_files or (40 if self.provider == "groq" else 120)
 
     @property
+    def eager_files(self) -> int:
+        """How many files are described *before* the city opens.
+
+        Describing every candidate up front was the whole cost of an analysis:
+        120 files at 6,000 characters is roughly 180,000 input tokens, on every
+        run, for a visitor who will click maybe five buildings. Only the most
+        important handful are now described eagerly -- enough to give the
+        briefing something to stand on -- and the rest are described the moment
+        somebody actually opens one. Set EAGER_FILES=0 to make the city open
+        instantly with no per-file calls at all.
+        """
+        if self._eager_files >= 0:
+            return self._eager_files
+        return 8 if self.provider == "groq" else 14
+
+    @property
     def batch_size(self) -> int:
         return self._batch_size or (4 if self.provider == "groq" else 10)
 
@@ -152,7 +171,33 @@ class Settings:
 
     @property
     def file_char_budget(self) -> int:
-        return self._file_char_budget or (1700 if self.provider == "groq" else 6000)
+        # `sketch.py` has already reduced the file to its imports, declarations
+        # and doc lines, so the extra thousands of characters were mostly body
+        # the model did not need. Trimming this is the cheapest token saving
+        # available: it scales linearly with every file sent.
+        return self._file_char_budget or (1700 if self.provider == "groq" else 2200)
+
+    @property
+    def chat_context_chars(self) -> int:
+        """How much of the city index the tour guide is handed per question.
+
+        The guide answers from a briefing built out of the analysed city:
+        every district, plus the most important couple of hundred buildings
+        with a line each. On a repository of any size that is around fifty
+        thousand characters -- some twelve thousand tokens -- which is fine
+        for a provider that meters a million tokens a minute and impossible
+        for one that meters eight thousand. On Groq's free tier the request
+        was larger than the entire per-minute allowance, so the guide could
+        not answer a single question: every attempt came back as a rate limit,
+        and waiting did not help because the next attempt was the same size.
+
+        Sized to the provider like the other budgets here. The briefing is
+        built most-important-first and stops at this many characters, so a
+        smaller allowance means fewer buildings named rather than a truncated
+        sentence -- and the guide is told how many it did not see, so it says
+        it does not know instead of assuming the repository is that small.
+        """
+        return self._chat_context_chars or (20000 if self.provider == "groq" else 90000)
 
     @property
     def api_key(self) -> str:

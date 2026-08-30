@@ -163,6 +163,7 @@ more compact batches because of its per-minute budget.
 | `LLM_BATCH_SIZE` | 4 | 10 | Files per request |
 | `LLM_CONCURRENCY` | 3 | 6 | Requests in flight |
 | `FILE_CHAR_BUDGET` | 1700 | 6000 | Sketch size per file |
+| `CHAT_CONTEXT_CHARS` | 20000 | 90000 | City index given to the tour guide |
 | `FILE_EFFORT` | low | medium | Reasoning depth per file batch |
 | `PROJECT_EFFORT` | medium | high | Reasoning depth for the briefing |
 

@@ -3,6 +3,7 @@ import { useFrame, useThree } from '@react-three/fiber'
 import {
   MutableRefObject,
   RefObject,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -11,12 +12,16 @@ import {
 import * as THREE from 'three'
 
 import { daylight, hoursForMode, type Daylight, type TimeMode } from '../../lib/daylight'
+import { LAYERS } from '../../lib/layers'
 import type { Building, CityData, District } from '../../types'
-import { Landscape } from './Landscape'
+import { Birds } from './Birds'
+import { Landscape, mountainPlacements, PEAK_BASE_Y, type Peak } from './Landscape'
 import { BuildingMesh } from './Building'
 import { DistrictPlot } from './District'
 import { Entrance } from './Entrance'
+import { Pedestrians } from './Pedestrians'
 import { CityProps } from './Props'
+import { Traffic } from './Traffic'
 import { Roads } from './Roads'
 
 export interface FocusRequest {
@@ -195,40 +200,63 @@ function ZoomController({ zoom }: { zoom: ZoomRequest | null }) {
 }
 
 /**
- * Closes the file panel once you pull away from the building it belongs to.
- * Hysteresis stops a nudge near the edge from flickering it.
+ * Closes the file panel once you genuinely leave the building behind.
+ *
+ * This is the reason focus "stopped working". The radius used to be
+ * `height * 2.4 + 70`, which for an ordinary five-unit building is about
+ * eighty units -- less than half the width of a modest city. Pulling back to
+ * see the building in context, or orbiting around it, crossed that line and
+ * silently dropped the selection: the whole city un-dimmed and the spotlight
+ * vanished, mid-look, with nothing to explain it. Both symptoms at once,
+ * intermittently, and always *after* it had been working.
+ *
+ * The radius now scales with the city rather than with one building, so it
+ * only fires when you have actually flown away, and it has to hold for a
+ * moment before it counts -- a brief overshoot while orbiting is not leaving.
  */
 function ProximityWatcher({
   selected,
   enabled,
+  span,
   onLeave,
 }: {
   selected: Building | null
   /** Off while the guided tour is driving; it moves you on purpose. */
   enabled: boolean
+  /** The city's larger dimension; the keep-radius is measured against it. */
+  span: number
   onLeave: () => void
 }) {
   const camera = useThree((state) => state.camera)
   const armed = useRef(false)
+  const outFor = useRef(0)
   const position = useMemo(() => new THREE.Vector3(), [])
 
   useEffect(() => {
     armed.current = false
+    outFor.current = 0
   }, [selected, enabled])
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (!selected || !enabled) return
     position.set(selected.x, selected.height * 0.5, selected.z)
     const distance = camera.position.distanceTo(position)
-    const keepRadius = selected.height * 2.4 + 70
+    const keepRadius = Math.max(span * 0.85, selected.height * 3 + 130)
 
     if (!armed.current) {
-      if (distance < keepRadius * 0.72) armed.current = true
+      if (distance < keepRadius * 0.6) armed.current = true
       return
     }
     if (distance > keepRadius) {
-      armed.current = false
-      onLeave()
+      // Has to stay out there, not just clip the boundary on the way past.
+      outFor.current += delta
+      if (outFor.current > 0.8) {
+        armed.current = false
+        outFor.current = 0
+        onLeave()
+      }
+    } else {
+      outFor.current = 0
     }
   })
 
@@ -403,6 +431,185 @@ function BearingDriver({ bearing }: { bearing: MutableRefObject<number | null> }
   return null
 }
 
+/**
+ * Fades everything inside it back while a building holds the focus.
+ *
+ * Dimming used to reach only the buildings, so clicking one left the streets,
+ * trees, lamps, traffic and people at full brightness -- most of what is
+ * actually on screen at street level. The city did not visibly recede, which
+ * is why focus mode looked as though it were not working at all.
+ *
+ * Materials are collected by walking the group, the same approach the
+ * buildings use, because these are instanced meshes owned by several
+ * different components and there is no prop to thread through them.
+ */
+function Recede({ active, floor, children }: {
+  active: boolean
+  /** How far back this content goes: 0 is invisible, 1 is untouched. */
+  floor: number
+  children: React.ReactNode
+}) {
+  const group = useRef<THREE.Group>(null)
+  const materials = useRef<THREE.Material[]>([])
+  const fade = useRef(1)
+
+  const apply = useCallback(
+    (list: THREE.Material[], value: number) => {
+      const opacity = floor + (1 - floor) * value
+      for (const material of list) {
+        // Street lamps, vehicle lamps and birds animate their own opacity
+        // every frame. Writing to them here does not dim them -- it just
+        // means whichever loop runs last that frame wins, which reads as a
+        // flicker. Leave them to their owners.
+        if (material.userData.selfLit) continue
+
+        if (material.userData.wasTransparent === undefined) {
+          material.userData.wasTransparent = material.transparent
+          material.userData.wasDepthWrite = material.depthWrite
+          material.userData.wasOpacity = material.opacity
+        }
+
+        if (value >= 1) {
+          material.opacity = material.userData.wasOpacity as number
+          material.transparent = material.userData.wasTransparent as boolean
+          material.depthWrite = material.userData.wasDepthWrite as boolean
+        } else {
+          material.opacity = opacity * (material.userData.wasOpacity as number)
+          material.transparent = true
+          // Off while faded, for the same reason the buildings do it: depth
+          // writing on a faded surface rejects whatever is behind it rather
+          // than letting it show through.
+          material.depthWrite = false
+        }
+      }
+    },
+    [floor],
+  )
+
+  useEffect(() => {
+    const found: THREE.Material[] = []
+    group.current?.traverse((child) => {
+      const mesh = child as THREE.Mesh
+      if (!mesh.isMesh || !mesh.material) return
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      for (const material of list) found.push(material)
+    })
+    materials.current = found
+    apply(found, fade.current)
+  }, [active, apply, children])
+
+  useFrame((_, delta) => {
+    const target = active ? 0 : 1
+    const moving = fade.current !== target
+    if (moving) {
+      fade.current =
+        Math.abs(fade.current - target) < 0.004
+          ? target
+          : fade.current + (target - fade.current) * Math.min(1, delta * 8)
+    }
+    // Written every frame while receded, not only while the value is moving:
+    // the same staleness that bit the buildings applies here, and traffic and
+    // pedestrians rebuild their meshes far more often than a building does.
+    if (moving || fade.current !== 1) apply(materials.current, fade.current)
+  })
+
+  return <group ref={group}>{children}</group>
+}
+
+/**
+ * Keeps the camera inside the valley.
+ *
+ * Nothing stopped it flying into a mountain, and the peaks are cones lit from
+ * outside -- so once you were inside one, backface culling hid the near wall
+ * and you were left staring at the far interior wall: a flat grey screen with
+ * the city somewhere behind it. Orbiting round the back of the range was the
+ * same story with the mountain in the way.
+ *
+ * Each peak is treated as a cone that narrows with height, and the camera is
+ * pushed back out along the shortest horizontal line if it gets inside one.
+ * `PEAK_SPREAD` is the fudge factor: a peak's drawn silhouette is wider than
+ * its nominal radius because the ridged displacement pushes vertices outward,
+ * by up to about 1.9x at the base, so the collision volume has to be wider
+ * than the cylinder the geometry started from or you can still clip a ridge.
+ *
+ * The floor clamp is the same problem from below -- dropping under the
+ * snowfield puts you inside the world looking up at its underside.
+ */
+const PEAK_SPREAD = 1.55
+const PEAK_MARGIN = 2.5
+
+function ValleyGuard({ peaks }: { peaks: Peak[] }) {
+  const camera = useThree((state) => state.camera)
+  const controls = useThree((state) => state.controls) as any
+
+  useFrame(() => {
+    let moved = false
+
+    const floor = LAYERS.snow + 4
+    if (camera.position.y < floor) {
+      camera.position.y = floor
+      moved = true
+    }
+
+    /** True while the camera is inside any peak's collision cone. */
+    const buried = () => {
+      for (const peak of peaks) {
+        const rise = (camera.position.y - PEAK_BASE_Y) / peak.height
+        if (rise >= 1) continue
+        const keep =
+          peak.radius * PEAK_SPREAD * (1 - Math.max(0, rise)) + PEAK_MARGIN
+        const dx = camera.position.x - peak.x
+        const dz = camera.position.z - peak.z
+        if (dx * dx + dz * dz < keep * keep) return true
+      }
+      return false
+    }
+
+    // Resolved over a few passes. Peaks overlap where a ridge runs into its
+    // neighbour, and pushing clear of one can push you straight into the next
+    // -- a single sweep leaves you inside the second one.
+    for (let pass = 0; pass < 6; pass++) {
+      let hit = false
+      for (const peak of peaks) {
+        const dx = camera.position.x - peak.x
+        const dz = camera.position.z - peak.z
+        const distance = Math.hypot(dx, dz)
+
+        // How wide the cone still is at the height the camera is flying at.
+        const rise = (camera.position.y - PEAK_BASE_Y) / peak.height
+        if (rise >= 1) continue // above the summit; nothing to hit
+        const keep =
+          peak.radius * PEAK_SPREAD * (1 - Math.max(0, rise)) + PEAK_MARGIN
+        if (distance >= keep) continue
+
+        // Push straight out. Dead centre has no outward direction, so pick one.
+        const nx = distance > 1e-3 ? dx / distance : 1
+        const nz = distance > 1e-3 ? dz / distance : 0
+        camera.position.x = peak.x + nx * keep
+        camera.position.z = peak.z + nz * keep
+        hit = true
+        moved = true
+      }
+      if (!hit) break
+    }
+
+    // A crevice where three ridges meet can bounce the camera between them
+    // forever, so there is a fallback with a guaranteed answer: walk back
+    // toward the middle of the valley, which is the one place no peak stands.
+    if (buried()) {
+      for (let step = 0; step < 24 && buried(); step++) {
+        camera.position.x *= 0.9
+        camera.position.z *= 0.9
+        moved = true
+      }
+    }
+
+    if (moved) controls?.update()
+  })
+
+  return null
+}
+
 /** Reports the camera position for the minimap without re-rendering React. */
 function PoseReporter({ pose }: { pose: MutableRefObject<CameraPose> }) {
   const camera = useThree((state) => state.camera)
@@ -454,6 +661,12 @@ export function CityScene({
   }, [timeMode])
   const night = sky.night
 
+  // Shared with the landscape, so the guard blocks the peaks that were drawn.
+  const peaks = useMemo(
+    () => mountainPlacements(span, data.entrance.z),
+    [span, data.entrance.z],
+  )
+
   const sunRef = useRef<THREE.DirectionalLight>(null)
   const hemiRef = useRef<THREE.HemisphereLight>(null)
 
@@ -488,8 +701,14 @@ export function CityScene({
         intensity={sky.sunIntensity}
         color={sky.sunColor.getHex()}
         castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        // The shadow map is a second full pass over every caster in the city,
+        // and its cost is the map's area. A large repo already has three times
+        // the geometry to push through it, so it takes the smaller map: the
+        // shadow camera covers the whole valley either way, which means even
+        // 2048 was only ever giving a large city about half a metre per texel.
+        // Dropping to 1024 softens an edge nobody was reading as sharp.
+        shadow-mapSize-width={detail ? 2048 : 1024}
+        shadow-mapSize-height={detail ? 2048 : 1024}
         shadow-camera-near={1}
         shadow-camera-far={span * 3.2}
         shadow-camera-left={-span * 0.8}
@@ -515,6 +734,9 @@ export function CityScene({
           from the city so a small repo gets a small valley. */}
       <Landscape span={span} night={night} entranceZ={data.entrance.z} />
 
+      {/* Birds turning over the valley by day; the sky empties after dusk. */}
+      <Birds span={span} night={night} />
+
       {/* An invisible catcher so clicking empty ground still dismisses panels. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
@@ -525,8 +747,24 @@ export function CityScene({
         <meshBasicMaterial visible={false} />
       </mesh>
 
-      <Roads roads={data.roads ?? []} night={night} />
-      <CityProps props={data.props ?? []} night={night} />
+      {/* The street network steps back in tone rather than in opacity.
+          Fading it meant turning depth writing off, which let the asphalt be
+          drawn over its own kerbs and markings -- the streets lost every
+          feature they had the moment you selected a building. See `RECEDE` in
+          Roads.tsx. Losing the street grid entirely would leave the focused
+          building floating in the dark with no city around it anyway. */}
+      <Roads roads={data.roads ?? []} night={night} dim={selected !== null} />
+
+      {/* The furniture does still fade: trees, lamps, traffic and people are
+          standing objects that can genuinely get between you and the building
+          you clicked, which is the one thing transparency is for here. */}
+      <Recede active={selected !== null} floor={0.34}>
+        <CityProps props={data.props ?? []} night={night} />
+        {/* Traffic drives lanes derived from the road network; people live on
+            the district plots. Both are decoration, both are instanced. */}
+        <Traffic roads={data.roads ?? []} span={span} night={night} />
+        <Pedestrians districts={data.districts} span={span} />
+      </Recede>
 
       {data.districts.map((district) => (
         <DistrictPlot
@@ -581,10 +819,16 @@ export function CityScene({
         maxPolarAngle={Math.PI / 2.15}
         target={[0, 4, 0]}
       />
+      <ValleyGuard peaks={peaks} />
       <CameraRig focus={focus} />
       <BearingDriver bearing={bearingDrag} />
       <ZoomController zoom={zoom} />
-      <ProximityWatcher selected={selected} enabled={!touring} onLeave={onLeaveSelected} />
+      <ProximityWatcher
+        selected={selected}
+        enabled={!touring}
+        span={span}
+        onLeave={onLeaveSelected}
+      />
       <HoverProjector building={hovered} anchor={hoverAnchor} />
       <PoseReporter pose={cameraPose} />
     </>

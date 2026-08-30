@@ -568,12 +568,22 @@ def build_city(
                 }
             )
             if s % 3 == 0:
+                # Two lanes, each pointing the way its traffic travels.
+                #
+                # Every vehicle used to be emitted at a flat 1.5708 rad. These
+                # only ever sit on avenues, which run along X -- and a quarter
+                # turn puts a car's *length* along Z, so the whole city's
+                # traffic was parked broadside across the road it was standing
+                # on. Facing along the road is rotation 0; the oncoming lane is
+                # the same road turned through half a circle.
+                oncoming = (s >> 6) % 2 == 0
+                lane = 0.22 if oncoming else -0.22
                 props.append(
                     {
                         "type": ["car", "bus", "truck", "van"][(s >> 4) % 4],
                         "x": round(x + 4, 2),
-                        "z": round(segment["z"] - segment["width"] * 0.22, 2),
-                        "rotation": 1.5708,
+                        "z": round(segment["z"] + segment["width"] * lane, 2),
+                        "rotation": round(math.pi if oncoming else 0.0, 4),
                         "scale": 1.0,
                         "color": ["#E63946", "#457B9D", "#F4A259", "#2A9D8F", "#F1FAEE"][(s >> 7) % 5],
                     }

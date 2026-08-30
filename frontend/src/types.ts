@@ -111,6 +111,17 @@ export interface CityStats {
   seedTech: string[]
 }
 
+/** The fields the model fills in for one file. */
+export interface FileNarration {
+  headline: string
+  summary: string
+  detail: string
+  tags: string[]
+  keySymbols: string[]
+  connectsTo: string[]
+  ai: boolean
+}
+
 export interface Road {
   x: number
   z: number

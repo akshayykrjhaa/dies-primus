@@ -1,4 +1,11 @@
-import type { AuthUser, CityData, JobSnapshot, ProfileData, RecentCity } from '../types'
+import type {
+  AuthUser,
+  CityData,
+  FileNarration,
+  JobSnapshot,
+  ProfileData,
+  RecentCity,
+} from '../types'
 
 const BASE = '/api'
 
@@ -92,6 +99,21 @@ export const api = {
       }
     })
   },
+
+  /**
+   * Asks the model to explain one file, the first time somebody opens it.
+   *
+   * Analysis only describes a handful of files up front, so most buildings
+   * arrive with a structural placeholder. This fills one in on demand; the
+   * server folds the answer back into the cached city, so it is only ever
+   * paid for once.
+   */
+  describe: (payload: { jobId?: string; cacheKey?: string; path: string }) =>
+    fetch(`${BASE}/describe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json<{ path: string; description: FileNarration; cached: boolean }>),
 
   /** Streams the tour-guide answer token by token. */
   async askGuide(

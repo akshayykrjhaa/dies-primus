@@ -64,7 +64,19 @@ export function NavGlobe({ pose, onBearing, onOverview, bearingDrag }: Props) {
     const radius = SIZE * 0.38
     let frame = 0
 
+    // The compass only ever changes when the bearing does, and a bearing that
+    // is not moving is the common case. Repainting three gradients sixty times
+    // a second to show the same needle is work the city could be spending on
+    // the city.
+    let lastAngle = NaN
+
     const draw = () => {
+      if (pose.current.angle === lastAngle) {
+        frame = requestAnimationFrame(draw)
+        return
+      }
+      lastAngle = pose.current.angle
+
       ctx.clearRect(0, 0, SIZE, SIZE)
 
       // The globe body, shaded so it reads as a sphere rather than a disc.

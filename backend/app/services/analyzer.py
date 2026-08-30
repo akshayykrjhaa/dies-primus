@@ -279,6 +279,22 @@ class Analyzer:
         await asyncio.gather(*(run(batch) for batch in batches))
         return out
 
+    async def one_file(
+        self, project_context: str, info: FileInfo, content: str
+    ) -> dict[str, Any]:
+        """Describe a single file, for the on-demand path.
+
+        The batch route above exists to amortise the shared preamble across
+        several files when everything is described up front. Describing one
+        file the moment somebody opens it is a different shape of request --
+        it is latency-sensitive and it happens a handful of times per visit --
+        so it goes on its own.
+        """
+        if not self.enabled:
+            return heuristic_file(info)
+        result = await self._one_batch(project_context, [(info, content)])
+        return result.get(info.path) or heuristic_file(info)
+
     async def _one_batch(
         self, project_context: str, batch: list[tuple[FileInfo, str]]
     ) -> dict[str, dict[str, Any]]:

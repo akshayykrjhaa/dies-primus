@@ -9,7 +9,15 @@ from . import city as city_builder
 from . import tech
 from .analyzer import Analyzer
 from .github import GitHubClient, GitHubError, parse_repo_url
-from .jobs import Job, cache_key, cache_read, cache_write
+from .jobs import (
+    Job,
+    cache_key,
+    cache_read,
+    cache_write,
+    describe_key,
+    describe_read,
+    describe_write,
+)
 from .selector import FileInfo, collect, pick_buildings, pick_for_llm
 from .sketch import sketch
 
@@ -100,9 +108,32 @@ async def run_analysis(
             f"Top-level layout: {outline_inline}\n"
         )
 
+        # Only the most important handful are described before the city opens.
+        #
+        # Describing every candidate up front was the entire cost of a run --
+        # roughly 180,000 input tokens for a visitor who will click maybe five
+        # buildings, which is what drained free-tier keys in two or three uses
+        # and what made a big repository take minutes. The rest are described
+        # the moment somebody actually opens one (see routers/describe.py), so
+        # the city appears immediately and tokens are spent on what is read.
+        eager = llm_files[: max(0, settings.eager_files)]
+
+        # Anything already described under this exact content is free.
+        cached_descriptions: dict[str, dict[str, Any]] = {}
+        pending: list[FileInfo] = []
+        for file in eager:
+            text = contents.get(file.path)
+            if not text:
+                continue
+            hit = describe_read(describe_key(file.path, text))
+            if hit:
+                cached_descriptions[file.path] = hit
+            else:
+                pending.append(file)
+
         batches: list[list[tuple[FileInfo, str]]] = []
         current: list[tuple[FileInfo, str]] = []
-        for file in llm_files:
+        for file in pending:
             text = contents.get(file.path)
             if not text:
                 continue
@@ -127,7 +158,17 @@ async def run_analysis(
             analyzer.files(light_context, batches, progress=job.update),
         )
 
-        # Files that never reached the model still need something to say.
+        # Remember every fresh description against its content, so the same
+        # file is never explained twice -- across commits, branches or repos.
+        for path, described in descriptions.items():
+            text = contents.get(path)
+            if text and described.get("ai"):
+                describe_write(describe_key(path, text), described)
+
+        descriptions.update(cached_descriptions)
+
+        # Everything else opens with a structural placeholder and is described
+        # properly the first time somebody clicks it.
         from .analyzer import heuristic_file
 
         for file in building_files:
@@ -160,6 +201,12 @@ async def run_analysis(
                 "seedTech": tech.dependency_logos(manifests),
             },
         )
+        # Stashed on the city so the on-demand route can describe a file with
+        # the same context the eager pass had, without re-reading the repo.
+        result["context"] = light_context
+        result["stats"]["filesDescribedEagerly"] = len(eager)
+        result["stats"]["filesFromCache"] = len(cached_descriptions)
+
         cache_write(key, result)
         job.finish(result)
         return result

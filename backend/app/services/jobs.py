@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 import re
 import time
 import uuid
@@ -129,6 +130,44 @@ def cache_write(key: str, payload: dict[str, Any]) -> None:
     path = settings.cache_dir / key
     try:
         path.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def describe_key(path: str, content: str) -> str:
+    """Cache key for one file's description: its path plus its contents.
+
+    Keyed on the *content*, not the commit, so a file that did not change
+    between two commits is described once, and a file that appears in two
+    branches -- or two repositories -- is described once for both. Path is in
+    the key as well because the same bytes mean different things in different
+    places.
+    """
+    blob = f"{path}::{len(content)}::{content}"
+    return hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:20]
+
+
+def _describe_dir() -> Path:
+    directory = settings.cache_dir / "files"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def describe_read(key: str) -> dict[str, Any] | None:
+    path = _describe_dir() / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def describe_write(key: str, payload: dict[str, Any]) -> None:
+    try:
+        (_describe_dir() / f"{key}.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
     except OSError:
         pass
 

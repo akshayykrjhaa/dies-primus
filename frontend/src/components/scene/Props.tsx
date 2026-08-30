@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 
 import { LAYERS } from '../../lib/layers'
@@ -137,7 +137,7 @@ function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
     }),
     [items],
   )
-  const poolGeo = useMemo(() => new THREE.CircleGeometry(1, 20), [])
+  const poolGeo = useMemo(() => new THREE.CircleGeometry(1, 44), [])
 
   // A flat disc of colour reads as a plate lying on the road, however faint --
   // which is exactly what these looked like. The falloff texture makes the
@@ -167,6 +167,18 @@ function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
       opacity: 0,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
+      // Biased toward the camera in screen space.
+      //
+      // The pool is a flat disc a few tenths of a unit above ground that is
+      // itself made of several stacked planes -- asphalt, kerb, apron, plot,
+      // lawn. Viewed along the ground those separations collapse in the depth
+      // buffer, and the disc lost the comparison in patches, which is what
+      // tore it into the angular fragments it was rendering as. Nudging its
+      // depth toward the viewer wins against surfaces it is lying on while
+      // still losing, correctly, to anything genuinely in front of it.
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -12,
       toneMapped: false,
     })
     const mesh = new THREE.InstancedMesh(poolGeo, material, Math.max(1, pools.length))
@@ -177,6 +189,11 @@ function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
     return mesh
   }, [poolGeo, poolTexture, pools])
 
+  // The pool drives its own opacity; keep the focus-mode sweep off it.
+  useEffect(() => {
+    ;(poolMesh.material as THREE.Material).userData.selfLit = true
+  }, [poolMesh])
+
   return (
     <group>
       <primitive object={postMesh} />
@@ -185,98 +202,6 @@ function Lamps({ items, night = 0 }: { items: Prop[]; night?: number }) {
           threshold was itself a pop. At zero opacity it costs one culled
           draw. */}
       <primitive object={poolMesh} />
-    </group>
-  )
-}
-
-/** Cars, vans, buses and trucks: a body, a cabin and four wheels. */
-function Vehicles({ items }: { items: Prop[] }) {
-  const spec: Record<string, { l: number; w: number; h: number; cab: number }> = {
-    car: { l: 4.0, w: 1.8, h: 0.75, cab: 0.62 },
-    van: { l: 4.8, w: 2.0, h: 1.1, cab: 0.5 },
-    bus: { l: 8.4, w: 2.4, h: 1.9, cab: 0.2 },
-    truck: { l: 7.4, w: 2.3, h: 1.6, cab: 0.34 },
-  }
-
-  const groups = useMemo(() => {
-    const byColor = new Map<string, { bodies: THREE.Matrix4[]; cabins: THREE.Matrix4[] }>()
-    const wheels: THREE.Matrix4[] = []
-
-    for (const prop of items) {
-      const size = spec[prop.type] ?? spec.car
-      const entry = byColor.get(prop.color) ?? { bodies: [], cabins: [] }
-      entry.bodies.push(
-        compose(prop.x, size.h / 2 + 0.34, prop.z, prop.rotation, size.l, size.h, size.w),
-      )
-      entry.cabins.push(
-        compose(
-          prop.x - Math.sin(prop.rotation) * size.l * 0.1,
-          size.h + 0.34 + size.h * size.cab * 0.5,
-          prop.z - Math.cos(prop.rotation) * size.l * 0.1,
-          prop.rotation,
-          size.l * 0.55,
-          Math.max(0.3, size.h * size.cab),
-          size.w * 0.9,
-        ),
-      )
-      byColor.set(prop.color, entry)
-
-      for (const dx of [-size.l * 0.32, size.l * 0.32]) {
-        for (const dz of [-size.w * 0.5, size.w * 0.5]) {
-          const cos = Math.cos(prop.rotation)
-          const sin = Math.sin(prop.rotation)
-          wheels.push(
-            compose(
-              prop.x + dx * cos - dz * sin,
-              0.34,
-              prop.z + dx * sin + dz * cos,
-              prop.rotation,
-              1,
-              1,
-              1,
-            ),
-          )
-        }
-      }
-    }
-    return { byColor, wheels }
-  }, [items])
-
-  const bodyGeo = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
-  const wheelGeo = useMemo(() => {
-    const geometry = new THREE.CylinderGeometry(0.34, 0.34, 0.24, 8)
-    geometry.rotateX(Math.PI / 2)
-    return geometry
-  }, [])
-  const wheelMesh = useInstanced(groups.wheels, wheelGeo, '#22262C', false)
-
-  return (
-    <group>
-      {[...groups.byColor.entries()].map(([color, entry]) => (
-        <ColouredVehicles key={color} color={color} bodies={entry.bodies} cabins={entry.cabins} geo={bodyGeo} />
-      ))}
-      <primitive object={wheelMesh} />
-    </group>
-  )
-}
-
-function ColouredVehicles({
-  color,
-  bodies,
-  cabins,
-  geo,
-}: {
-  color: string
-  bodies: THREE.Matrix4[]
-  cabins: THREE.Matrix4[]
-  geo: THREE.BufferGeometry
-}) {
-  const bodyMesh = useInstanced(bodies, geo, color)
-  const cabinMesh = useInstanced(cabins, geo, '#D8E4EE')
-  return (
-    <group>
-      <primitive object={bodyMesh} />
-      <primitive object={cabinMesh} />
     </group>
   )
 }
@@ -363,23 +288,16 @@ export function CityProps({ props: items, night = 0 }: { props: Prop[]; night?: 
     return bag
   }, [items])
 
-  const vehicles = useMemo(
-    () => [
-      ...(grouped.car ?? []),
-      ...(grouped.van ?? []),
-      ...(grouped.bus ?? []),
-      ...(grouped.truck ?? []),
-    ],
-    [grouped],
-  )
-
   return (
     <group>
       {grouped.tree?.length ? <Trees items={grouped.tree} /> : null}
       {grouped.palm?.length ? <Palms items={grouped.palm} /> : null}
       {grouped.lamp?.length ? <Lamps items={grouped.lamp} night={night} /> : null}
       {grouped.park?.length ? <Parks items={grouped.park} /> : null}
-      {vehicles.length ? <Vehicles items={vehicles} /> : null}
+      {/* Vehicles now live in Traffic.tsx, which drives them along lanes it
+          derives from the road network and lights them after dark. The
+          generator still emits the props; they are simply no longer the
+          thing that draws the traffic. */}
       {grouped.stadium?.map((prop, index) => (
         <Stadium key={index} prop={prop} />
       ))}

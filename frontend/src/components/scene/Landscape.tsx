@@ -167,16 +167,16 @@ const SNOW_B = new THREE.Color('#DCE8F5')
  * ring, and rock still pokes through it in patches near the ridges -- as in
  * the reference photos.
  */
-function mountainPeak(baseRadius: number, height: number, random: () => number): THREE.BufferGeometry {
+function mountainPeak(
+  baseRadius: number, height: number, seed: number, snowLine: number,
+): THREE.BufferGeometry {
   const radialSegments = 10
   const heightSegments = 11
   const geometry = new THREE.CylinderGeometry(
     baseRadius * 0.02, baseRadius, height, radialSegments, heightSegments, false,
   ).toNonIndexed()
   const position = geometry.attributes.position as THREE.BufferAttribute
-  const seed = Math.floor(random() * 100000)
   const freq = 1.7 / Math.max(6, baseRadius)
-  const snowLine = 0.42 + random() * 0.14
   const colors = new Float32Array(position.count * 3)
   const c = new THREE.Color()
 
@@ -227,55 +227,92 @@ function mountainPeak(baseRadius: number, height: number, random: () => number):
 }
 
 /** The ranges enclosing the valley, with a clear corridor at the gate. */
+/** Where the range stands. The base every peak is planted on. */
+export const PEAK_BASE_Y = -0.6
+
+export interface Peak {
+  x: number
+  z: number
+  /** Nominal base radius, before ridged displacement widens it. */
+  radius: number
+  height: number
+  seed: number
+  snowLine: number
+  spin: number
+}
+
+/**
+ * Every peak in the range, as plain numbers.
+ *
+ * Split out from the geometry builder so the camera guard can keep you out of
+ * the mountains using the *same* peaks that were actually drawn. Deriving the
+ * two separately would let them drift apart, and a collision volume that
+ * disagrees with what you can see is worse than none.
+ *
+ * The random draws happen in exactly the order the geometry needs them --
+ * angle, distance, height, radius, then the peak's own seed, snow line and
+ * spin -- so a given city still builds the range it always did.
+ */
+export function mountainPlacements(span: number, entranceZ: number): Peak[] {
+  const random = mulberry(Math.round(span * 1000))
+  const peaks: Peak[] = []
+
+  // The gate sits at +Z. Peaks are kept out of that arc so the approach
+  // stays open and nothing crowds the portal.
+  const gateAngle = Math.atan2(entranceZ, 0) // +PI/2
+  const clearArc = 0.62
+
+  const rings = [
+    { radius: span * 1.7, count: 18, height: span * 0.36, spread: span * 0.16 },
+    { radius: span * 2.3, count: 22, height: span * 0.56, spread: span * 0.22 },
+    { radius: span * 3.0, count: 24, height: span * 0.76, spread: span * 0.3 },
+  ]
+
+  // Sample the water once; any peak that would stand in it (or on its banks)
+  // is dropped, so the channel stays visible from every angle.
+  const water = waterFootprint(span)
+
+  for (const ring of rings) {
+    for (let i = 0; i < ring.count; i++) {
+      const angle = (i / ring.count) * Math.PI * 2 + random() * 0.2
+
+      // Angular distance to the gate direction, wrapped to [-PI, PI].
+      let delta = angle - gateAngle
+      while (delta > Math.PI) delta -= Math.PI * 2
+      while (delta < -Math.PI) delta += Math.PI * 2
+      if (Math.abs(delta) < clearArc) continue
+
+      const distance = ring.radius + (random() - 0.5) * ring.spread
+      const height = ring.height * (0.5 + random() * 0.85)
+      const radius = height * (0.55 + random() * 0.4)
+
+      const x = Math.cos(angle) * distance
+      const z = Math.sin(angle) * distance
+      if (!clearsWater(water, x, z, radius, span * 0.05)) continue
+
+      peaks.push({
+        x,
+        z,
+        radius,
+        height,
+        seed: Math.floor(random() * 100000),
+        snowLine: 0.42 + random() * 0.14,
+        spin: random() * Math.PI * 2,
+      })
+    }
+  }
+  return peaks
+}
+
 function Mountains({ span, night, entranceZ }: LandscapeProps) {
   const geometry = useMemo(() => {
-    const random = mulberry(Math.round(span * 1000))
     const parts: THREE.BufferGeometry[] = []
-
-    // The gate sits at +Z. Peaks are kept out of that arc so the approach
-    // stays open and nothing crowds the portal.
-    const gateAngle = Math.atan2(entranceZ, 0) // +PI/2
-    const clearArc = 0.62
-
-    // Pushed further out than before: the first ridge used to start at
-    // span * 1.15, close enough to sit on the river and to crowd the city.
-    const rings = [
-      { radius: span * 1.7, count: 18, height: span * 0.36, spread: span * 0.16 },
-      { radius: span * 2.3, count: 22, height: span * 0.56, spread: span * 0.22 },
-      { radius: span * 3.0, count: 24, height: span * 0.76, spread: span * 0.3 },
-    ]
-
-    // Sample the water once; any peak that would stand in it (or on its
-    // banks) is dropped, so the channel stays visible from every angle. The
-    // keep-out follows the river's real width rather than a flat radius, so
-    // the range can still close in around the narrow gorge at its source.
-    const water = waterFootprint(span)
-
-    for (const ring of rings) {
-      for (let i = 0; i < ring.count; i++) {
-        const angle = (i / ring.count) * Math.PI * 2 + random() * 0.2
-
-        // Angular distance to the gate direction, wrapped to [-PI, PI].
-        let delta = angle - gateAngle
-        while (delta > Math.PI) delta -= Math.PI * 2
-        while (delta < -Math.PI) delta += Math.PI * 2
-        if (Math.abs(delta) < clearArc) continue
-
-        const distance = ring.radius + (random() - 0.5) * ring.spread
-        const height = ring.height * (0.5 + random() * 0.85)
-        const radius = height * (0.55 + random() * 0.4)
-
-        const px = Math.cos(angle) * distance
-        const pz = Math.sin(angle) * distance
-        if (!clearsWater(water, px, pz, radius, span * 0.05)) continue
-
-        const peak = mountainPeak(radius, height, random)
-        peak.rotateY(random() * Math.PI * 2)
-        peak.translate(px, -0.6, pz)
-        parts.push(peak)
-      }
+    for (const peak of mountainPlacements(span, entranceZ)) {
+      const part = mountainPeak(peak.radius, peak.height, peak.seed, peak.snowLine)
+      part.rotateY(peak.spin)
+      part.translate(peak.x, PEAK_BASE_Y, peak.z)
+      parts.push(part)
     }
-
     const merged = mergeGeometries(parts)
     parts.forEach((part) => part.dispose())
     return merged
@@ -289,7 +326,10 @@ function Mountains({ span, night, entranceZ }: LandscapeProps) {
 
   return (
     <mesh geometry={geometry} receiveShadow castShadow>
-      <meshLambertMaterial vertexColors color={tint} />
+      {/* Double-sided as a backstop. The camera guard should keep you out of
+          the range entirely, but a single-sided peak that you do graze shows
+          you its far interior wall and nothing else -- a flat grey screen. */}
+      <meshLambertMaterial vertexColors color={tint} side={THREE.DoubleSide} />
     </mesh>
   )
 }

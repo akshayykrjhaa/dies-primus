@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..config import settings
 from ..services import jobs as job_service
 from ..services.llm import make_llm
 
@@ -65,10 +66,37 @@ def _briefing(city: dict[str, Any], focus_path: str | None) -> str:
     lines.append("")
     lines.append("BUILDINGS (path | role | what it is):")
     buildings = sorted(city.get("buildings", []), key=lambda b: -b.get("importance", 0))
+
+    # Most important first, up to whatever the provider's context allows.
+    # See `Settings.chat_context_chars`: on a small per-minute allowance the
+    # full index is bigger than a single request may be, so the list is
+    # trimmed rather than the request failing outright.
+    budget = settings.chat_context_chars
+    trim = 220 if budget >= 40000 else 140
+    # Counted from what the briefing already holds -- the overview and the
+    # district list are part of the same request, and on a tight allowance
+    # they are a large enough share of it to matter.
+    spent = sum(len(line) + 1 for line in lines)
+    shown = 0
     for building in buildings[:220]:
-        lines.append(
+        line = (
             f"- {building['path']} | {building.get('role')} | "
-            f"{building.get('headline')} :: {building.get('summary', '')[:220]}"
+            f"{building.get('headline')} :: {(building.get('summary') or '')[:trim]}"
+        )
+        if spent + len(line) > budget and shown:
+            break
+        lines.append(line)
+        spent += len(line)
+        shown += 1
+
+    # Said plainly, so an answer about "every file" is not drawn from a list
+    # the guide only saw part of.
+    left = len(buildings) - shown
+    if left > 0:
+        lines.append(
+            f"({left} further files exist in this repository and are not listed "
+            "above. If a question needs one of them, say you cannot see it "
+            "from here rather than guessing.)"
         )
 
     if focus_path:

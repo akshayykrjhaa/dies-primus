@@ -255,7 +255,18 @@ function Windows({
       })
       mesh.instanceMatrix.needsUpdate = true
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-      mesh.frustumCulled = false
+      // Culled, unlike most instanced meshes in the city.
+      //
+      // The usual reason to switch culling off is that a set spans everything
+      // -- the road network, the street furniture -- so the test can only ever
+      // cost time and never save any. A window grid is the opposite: it
+      // belongs to exactly one building, and in a large repository there are
+      // several hundred of them. Leaving them all switched on meant every
+      // facade in the city was submitted on every frame, including the two
+      // thirds of them behind the camera. `InstancedMesh` derives its own
+      // bounding sphere from the instance matrices, so this is simply correct
+      // once the panes are placed.
+      mesh.frustumCulled = true
       return mesh
     }
 

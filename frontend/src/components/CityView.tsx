@@ -1,8 +1,9 @@
 import { Canvas } from '@react-three/fiber'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { api } from '../lib/api'
 import { clockLabel, daylight, hoursForMode, type TimeMode } from '../lib/daylight'
-import type { Building, CityData, District } from '../types'
+import type { Building, CityData, District, FileNarration } from '../types'
 import { DetailDrawer } from './DetailDrawer'
 import { GuideChat } from './GuideChat'
 import { HoverCard } from './HoverCard'
@@ -43,6 +44,11 @@ const WARP_TO_CITY = 2000 // city mounts behind the white
 export function CityView({ data, jobId, cacheKey, onExit }: Props) {
   const [hovered, setHovered] = useState<Building | null>(null)
   const [selected, setSelected] = useState<Building | null>(null)
+  // Narration that arrived after the city did. Analysis only explains a
+  // handful of files up front; the rest are fetched the first time they are
+  // opened, and kept here so reopening one is instant.
+  const [narration, setNarration] = useState<Record<string, FileNarration>>({})
+  const describing = useRef<Set<string>>(new Set())
   const [pointed, setPointed] = useState<Building | null>(null)
   // The briefing is opt-in: it opens from the sign above the portal, never
   // on arrival. Having it slide over every new city was the first thing you
@@ -287,6 +293,34 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
     overview(true)
   }, [phase, overview])
 
+  // Fetch the explanation for whatever is open, once.
+  useEffect(() => {
+    const path = selected?.path
+    if (!path || selected?.ai || narration[path] || describing.current.has(path)) return
+    describing.current.add(path)
+    let alive = true
+    api
+      .describe({ jobId: jobId ?? undefined, cacheKey: cacheKey ?? undefined, path })
+      .then((result) => {
+        if (alive) setNarration((prev) => ({ ...prev, [path]: result.description }))
+      })
+      .catch(() => {
+        // Leave the structural placeholder in place; it still says something
+        // true about the file, and the panel is more use than an error.
+      })
+      .finally(() => describing.current.delete(path))
+    return () => {
+      alive = false
+    }
+  }, [selected, jobId, cacheKey, narration])
+
+  /** The open building, with anything the model has since told us folded in. */
+  const detailed = useMemo(() => {
+    if (!selected) return null
+    const extra = narration[selected.path]
+    return extra ? { ...selected, ...extra } : selected
+  }, [selected, narration])
+
   // Hovering off a building briefly keeps the label alive so moving between
   // two neighbouring buildings does not flicker.
   const handleHover = useCallback((building: Building | null) => {
@@ -447,7 +481,13 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
     <div className="city">
       <Canvas
         shadows
-        dpr={[1, 1.8]}
+        // Resolution is the one cost that scales with nothing but itself, and
+        // 1.8 on a retina panel means drawing three and a quarter times the
+        // pixels of the window -- for a scene that is already spending most of
+        // its frame on draw calls. A big city gives some of that back: 1.4 is
+        // still comfortably above native on the laptop screens this runs on,
+        // and the difference is invisible next to a frame rate that holds.
+        dpr={[1, data.buildings.length > 180 ? 1.4 : 1.75]}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
         // A near plane of 1 rather than the 0.1 default: the far plane is
         // hundreds of units out, and that ratio is what starved the depth
@@ -628,7 +668,7 @@ export function CityView({ data, jobId, cacheKey, onExit }: Props) {
       />
 
       <DetailDrawer
-        building={selected}
+        building={detailed}
         onClose={() => setSelected(null)}
         onAskGuide={(question, path) => {
           setGuideOpen(true)

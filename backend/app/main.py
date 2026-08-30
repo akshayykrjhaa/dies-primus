@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
-from .routers import analyze, auth, chat, profile
+from .routers import analyze, auth, chat, describe, profile
 
 app = FastAPI(
     title="Repo City",
@@ -33,6 +33,7 @@ app.include_router(analyze.router)
 app.include_router(auth.router)
 app.include_router(profile.router)
 app.include_router(chat.router)
+app.include_router(describe.router)
 
 # If the frontend has been built (npm run build), serve it from the same
 # origin so the whole demo runs on http://localhost:8000.
