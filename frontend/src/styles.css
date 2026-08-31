@@ -1226,89 +1226,129 @@ code {
   }
 }
 
-/* ---------------------------------------------------------------- loading */
+/* ---------------------------------------------------------------- forging */
 
-.loading {
-  height: 100%;
-  display: grid;
-  place-items: center;
+/* The wait is spent inside the antechamber rather than in front of a card:
+   the canvas fills the screen and the readout sits over it in the portal's
+   own type, so arriving at the gate is a continuation, not a swap. */
+
+.forge {
+  position: fixed;
+  inset: 0;
+  /* Also the whole backdrop when WebGL is unavailable or motion is reduced. */
   background:
-    radial-gradient(900px 500px at 50% 20%, rgba(91, 124, 250, 0.2), transparent 60%),
-    var(--bg);
+    radial-gradient(900px 620px at 50% 36%, rgba(122, 75, 255, 0.18), transparent 62%),
+    radial-gradient(700px 420px at 50% 92%, rgba(255, 46, 136, 0.12), transparent 65%),
+    #06060e;
 }
-.loading__card {
+.forge canvas {
+  display: block;
+  touch-action: none;
+}
+
+.forge__center {
   width: min(560px, 92vw);
-  border: 1px solid var(--panel-border);
-  background: var(--panel);
-  border-radius: 18px;
-  padding: 30px;
-  box-shadow: var(--shadow);
+  gap: 11px;
+  padding-bottom: 4vh;
 }
-.loading__card h2 {
-  margin: 0 0 22px;
-  font-size: 20px;
-  word-break: break-all;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-}
-.loading__bar {
-  height: 6px;
+
+/* Progress reads twice: the arc around the gate for the glance, this for the
+   number. */
+.forge__meter {
+  width: 100%;
+  height: 3px;
+  margin-top: 8px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 190, 235, 0.14);
   overflow: hidden;
 }
-.loading__bar span {
+.forge__meter span {
   display: block;
   height: 100%;
   border-radius: 99px;
-  background: linear-gradient(90deg, #5b7cfa, #7ef9c8);
-  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  background: linear-gradient(90deg, #7a4bff, #ff2e88 72%, #ffd0ea);
+  box-shadow: 0 0 18px rgba(255, 46, 136, 0.7);
+  transition: width 0.7s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.loading__stage {
+
+.forge__stage {
   display: flex;
   justify-content: space-between;
-  color: var(--muted);
-  font-size: 13.5px;
-  margin: 12px 0 18px;
+  align-items: baseline;
+  gap: 18px;
+  width: 100%;
+  margin: 0;
+  font-size: 13px;
+  color: #c8b2d6;
+  text-align: left;
 }
-.loading__log {
+.forge__percent {
+  color: #ffd0ea;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.forge__log {
   list-style: none;
-  margin: 0 0 22px;
+  margin: 0;
   padding: 0;
-  font-size: 12.5px;
-  color: var(--muted);
+  width: 100%;
+  /* Reserved so the block does not jump as lines arrive. */
+  min-height: 72px;
   display: grid;
-  gap: 5px;
-  min-height: 110px;
+  align-content: start;
+  gap: 4px;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: rgba(201, 178, 216, 0.72);
+  text-align: left;
 }
-.loading__log li {
+.forge__log li {
   display: flex;
   gap: 10px;
+  animation: forge-line 0.45s ease both;
 }
-.loading__t {
-  color: var(--accent);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  min-width: 44px;
+/* Older lines recede, so the newest one is where the eye lands. */
+.forge__log li:nth-child(1) {
+  opacity: 0.4;
 }
-.loading__crane {
-  display: flex;
-  align-items: flex-end;
-  gap: 5px;
-  height: 60px;
-  margin-bottom: 22px;
+.forge__log li:nth-child(2) {
+  opacity: 0.58;
 }
-.loading__crane span {
-  flex: 1;
-  background: linear-gradient(180deg, var(--accent), rgba(91, 124, 250, 0.06));
-  border-radius: 3px 3px 0 0;
-  animation: build 1.9s ease-in-out infinite;
+.forge__log li:nth-child(3) {
+  opacity: 0.78;
 }
-@keyframes build {
-  0%,
-  100% {
-    height: 18%;
+@keyframes forge-line {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
   }
-  50% {
-    height: 92%;
+}
+.forge__t {
+  color: #e48fc0;
+  min-width: 42px;
+}
+
+@media (max-width: 640px) {
+  .forge__center {
+    padding-bottom: 2vh;
+  }
+  /* On a short screen the gate matters more than the backlog. */
+  .forge__log {
+    min-height: 0;
+  }
+  .forge__log li:nth-child(1),
+  .forge__log li:nth-child(2) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .forge__log li {
+    animation: none;
+  }
+  .forge__meter span {
+    transition: none;
   }
 }
 
