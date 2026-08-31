@@ -1,0 +1,21 @@
+﻿[build]
+  base    = "frontend"
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# API proxy MUST come before the SPA fallback.
+# Replace with your actual Render URL after deploying the backend.
+[[redirects]]
+  from   = "/api/*"
+  to     = "https://dies-primus-api.onrender.com/api/:splat"
+  status = 200
+  force  = true
+
+# SPA fallback - all client-side routes serve index.html
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200

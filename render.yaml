@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: dies-primus-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    plan: free
+
+    envVars:
+      # --- LLM ---------------------------------------------------------------
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false          # set this in Render dashboard → Environment
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_FILE_MODELS
+        value: openai/gpt-oss-120b,openai/gpt-oss-20b
+      - key: GEMINI_API_KEY
+        sync: false          # alternate — set in dashboard if you want Gemini fallback
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+
+      # --- GitHub ------------------------------------------------------------
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      # Set to: https://your-app.netlify.app/api/auth/github/callback
+      - key: GITHUB_OAUTH_REDIRECT_URI
+        sync: false
+      - key: GITHUB_OAUTH_SCOPES
+        value: read:user repo
+
+      # --- CORS: allow your Netlify frontend ---------------------------------
+      # Set to your Netlify URL, e.g. https://your-app.netlify.app
+      - key: CORS_ORIGINS
+        sync: false
+
+      # --- Frontend URL (used for redirects after OAuth) ---------------------
+      - key: FRONTEND_URL
+        sync: false
+
+      # --- Cookie security ---------------------------------------------------
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+
+      # --- Python version ----------------------------------------------------
+      - key: PYTHON_VERSION
+        value: "3.11"
