@@ -1,10 +1,11 @@
-"""One narrator interface, two providers.
+"""One narrator interface, three providers.
 
-Both back ends answer with schema-validated JSON, so everything downstream
+All back ends answer with schema-validated JSON, so everything downstream
 treats a model response as data rather than prose to parse:
 
-  * Groq   -- strict `json_schema` response format (default; very fast)
-  * Claude -- `output_config.format` structured outputs
+  * Groq    -- strict `json_schema` response format (primary; very fast)
+  * Gemini  -- response_mime_type JSON mode (alternate; 1M tok/min free tier)
+  * Claude  -- `output_config.format` structured outputs (explicit opt-in)
 
 Whichever is configured, a failure never takes the run down: `structured()`
 returns None and the caller falls back to a heuristic description.
@@ -455,16 +456,16 @@ class DisabledLLM(LLM):
 
     async def stream_text(self, system: str, prompt: str) -> AsyncIterator[str]:
         yield (
-            "The tour guide needs an API key. Add GEMINI_API_KEY (recommended), "
-            "GROQ_API_KEY, or ANTHROPIC_API_KEY to backend/.env and restart the server."
+            "The tour guide needs an API key. Add GROQ_API_KEY (primary) or "
+            "GEMINI_API_KEY (alternate) to backend/.env and restart the server."
         )
 
 
 def make_llm() -> LLM:
     if not settings.has_llm:
         return DisabledLLM()
-    if settings.provider == "gemini":
-        return GeminiLLM()
     if settings.provider == "groq":
         return GroqLLM()
-    return AnthropicLLM()
+    if settings.provider == "gemini":
+        return GeminiLLM()
+    return AnthropicLLM()  # explicit LLM_PROVIDER=anthropic only

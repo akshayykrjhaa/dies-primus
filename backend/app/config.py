@@ -19,14 +19,14 @@ def _int(name: str, default: int) -> int:
 
 
 def _default_provider() -> str:
-    """Whichever key is present wins; Gemini first (generous free tier)."""
+    """Whichever key is present wins; Groq first (primary), Gemini second (alternate)."""
     explicit = (os.getenv("LLM_PROVIDER") or "").strip().lower()
     if explicit in {"groq", "anthropic", "gemini"}:
         return explicit
-    if os.getenv("GEMINI_API_KEY"):
-        return "gemini"
     if os.getenv("GROQ_API_KEY"):
         return "groq"
+    if os.getenv("GEMINI_API_KEY"):
+        return "gemini"
     return "anthropic"
 
 
