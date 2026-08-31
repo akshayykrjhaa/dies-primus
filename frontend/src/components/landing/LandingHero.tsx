@@ -14,6 +14,7 @@ interface Props {
   mood: Mood
   user: AuthUser | null
   onLogout: () => void
+  onViewGithub: () => void
   authNotice: { text: string; kind: 'success' | 'error' } | null
 }
 
@@ -26,7 +27,7 @@ const EXAMPLES = [
 
 const SPARKS = ['landing__cta-spark--1', 'landing__cta-spark--2', 'landing__cta-spark--3', 'landing__cta-spark--4']
 
-export function LandingHero({ onAnalyze, error, mood, user, onLogout, authNotice }: Props) {
+export function LandingHero({ onAnalyze, error, mood, user, onLogout, onViewGithub, authNotice }: Props) {
   const [url, setUrl] = useState('')
   const scope = useRef<HTMLDivElement>(null)
   const squiggle = useRef<SVGPathElement>(null)
@@ -84,8 +85,10 @@ export function LandingHero({ onAnalyze, error, mood, user, onLogout, authNotice
       <div className="github-connect">
         {user?.authenticated ? (
           <div className="github-connect__user">
-            {user.avatarUrl && <img className="github-connect__avatar" src={user.avatarUrl} alt="" />}
-            <span className="github-connect__login">{user.login}</span>
+            <button className="github-connect__profile-link" onClick={onViewGithub} title="View your GitHub profile">
+              {user.avatarUrl && <img className="github-connect__avatar" src={user.avatarUrl} alt="" />}
+              <span className="github-connect__login">{user.login}</span>
+            </button>
             <button className="github-connect__signout" onClick={onLogout}>
               Sign out
             </button>

@@ -1,6 +1,7 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { CityView } from './components/CityView'
+import { GithubProfile } from './components/GithubProfile'
 import { Landing } from './components/Landing'
 import { LoadingScreen } from './components/LoadingScreen'
 import { api } from './lib/api'
@@ -8,16 +9,43 @@ import type { CityData, JobSnapshot } from './types'
 
 type View =
   | { name: 'landing' }
+  | { name: 'github' }
   | { name: 'building'; repoUrl: string }
   | { name: 'city' }
 
+const GITHUB_PATH = '/github'
+
+function viewFromPath(pathname: string): View {
+  return pathname === GITHUB_PATH ? { name: 'github' } : { name: 'landing' }
+}
+
 export default function App() {
-  const [view, setView] = useState<View>({ name: 'landing' })
+  const [view, setView] = useState<View>(() => viewFromPath(window.location.pathname))
   const [job, setJob] = useState<JobSnapshot | null>(null)
   const [city, setCity] = useState<CityData | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [cacheKey, setCacheKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Keeps browser back/forward in sync with the landing <-> GitHub profile
+  // pages. The transient "building"/"city" views are never pushed to
+  // history, so a back-navigation out of them simply lands on whichever of
+  // those two the URL says — same as a fresh load.
+  useEffect(() => {
+    const onPopState = () => setView(viewFromPath(window.location.pathname))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  const goToLanding = useCallback(() => {
+    window.history.pushState(null, '', '/')
+    setView({ name: 'landing' })
+  }, [])
+
+  const goToGithub = useCallback(() => {
+    window.history.pushState(null, '', GITHUB_PATH)
+    setView({ name: 'github' })
+  }, [])
 
   const analyze = useCallback(async (repoUrl: string, force: boolean) => {
     setError(null)
@@ -32,7 +60,7 @@ export default function App() {
       setView({ name: 'city' })
     } catch (caught) {
       setError((caught as Error).message)
-      setView({ name: 'landing' })
+      setView(viewFromPath(window.location.pathname))
     }
   }, [])
 
@@ -47,7 +75,7 @@ export default function App() {
       setView({ name: 'city' })
     } catch (caught) {
       setError((caught as Error).message)
-      setView({ name: 'landing' })
+      setView(viewFromPath(window.location.pathname))
     }
   }, [])
 
@@ -59,7 +87,7 @@ export default function App() {
         cacheKey={cacheKey}
         onExit={() => {
           setCity(null)
-          setView({ name: 'landing' })
+          setView(viewFromPath(window.location.pathname))
         }}
       />
     )
@@ -70,10 +98,14 @@ export default function App() {
       <LoadingScreen
         repoUrl={view.repoUrl}
         job={job}
-        onCancel={() => setView({ name: 'landing' })}
+        onCancel={() => setView(viewFromPath(window.location.pathname))}
       />
     )
   }
 
-  return <Landing onAnalyze={analyze} onOpenCached={openCached} error={error} />
+  if (view.name === 'github') {
+    return <GithubProfile onAnalyze={analyze} onBack={goToLanding} />
+  }
+
+  return <Landing onAnalyze={analyze} onOpenCached={openCached} onViewGithub={goToGithub} error={error} />
 }
