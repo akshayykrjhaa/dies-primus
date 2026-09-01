@@ -61,43 +61,84 @@ export const api = {
   job: (jobId: string) => fetch(`${BASE}/jobs/${jobId}`).then(json<JobSnapshot>),
 
   /**
-   * Follows a job over Server-Sent Events. Resolves with the finished city;
-   * `onProgress` fires for every stage change along the way.
+   * Follows a job to completion, polling for its state.
+   *
+   * This used to watch a Server-Sent Events stream, which is the better fit
+   * for the problem and worked perfectly in development. It does not survive
+   * a CDN in front of the API: an edge that buffers proxied responses -- and
+   * Netlify's does, visibly, since the `Transfer-Encoding: chunked` the
+   * backend sends never reaches the browser -- turns an incremental stream
+   * into a single response delivered at the end, and then drops the
+   * long-lived connection well before an analysis has finished.
+   *
+   * The failure was worse than losing the progress text. The old code fell
+   * back to a *single* poll when the stream died, so a connection dropped at
+   * ten seconds into a thirty-second analysis found the job still running,
+   * gave up, and sent the visitor back to the landing page reporting a lost
+   * connection -- while the backend carried on and finished the city, which
+   * then appeared in the cache list as though nothing had happened.
+   *
+   * Polling has none of that to go wrong: every request is short, ordinary,
+   * and cacheable-or-not on its own terms. The signature is unchanged, so
+   * `onProgress` still fires as the job moves through its stages -- just on
+   * a poll rather than on a push.
    */
-  followJob(jobId: string, onProgress: (snapshot: JobSnapshot) => void): Promise<CityData> {
-    return new Promise((resolve, reject) => {
-      const source = new EventSource(`${BASE}/jobs/${jobId}/events`)
+  async followJob(
+    jobId: string,
+    onProgress: (snapshot: JobSnapshot) => void,
+  ): Promise<CityData> {
+    /** Fast enough to feel live, slow enough to be nothing on the network. */
+    const INTERVAL = 1500
+    /** A whole analysis, plus room for a sleeping free-tier backend to wake. */
+    const TIMEOUT = 10 * 60 * 1000
+    /**
+     * A poll may fail for reasons the job knows nothing about -- a dropped
+     * connection, a cold start, a blip at the edge. One failure is not a
+     * failed analysis, so it takes several in a row to give up. This is the
+     * exact impatience that made the old fallback report a working analysis
+     * as broken.
+     */
+    const MAX_MISSES = 5
 
-      source.onmessage = (event) => {
-        const snapshot = JSON.parse(event.data) as JobSnapshot
-        onProgress(snapshot)
-        if (snapshot.status === 'done') {
-          source.close()
-          api
-            .job(jobId)
-            .then((full) => {
-              if (full.result) resolve(full.result)
-              else reject(new Error('The job finished without a city.'))
-            })
-            .catch(reject)
-        } else if (snapshot.status === 'error') {
-          source.close()
-          reject(new Error(snapshot.error || 'Analysis failed.'))
+    const started = Date.now()
+    let misses = 0
+    let last = ''
+
+    for (;;) {
+      let snapshot: JobSnapshot
+      try {
+        snapshot = await api.job(jobId)
+        misses = 0
+      } catch (error) {
+        misses += 1
+        if (misses >= MAX_MISSES) {
+          throw new Error('Lost the connection to the server.')
         }
+        await new Promise((r) => setTimeout(r, INTERVAL))
+        continue
       }
 
-      source.onerror = () => {
-        // The stream dropped: fall back to a one-shot poll before giving up.
-        source.close()
-        api
-          .job(jobId)
-          .then((full) => {
-            if (full.status === 'done' && full.result) resolve(full.result)
-            else reject(new Error(full.error || 'Lost the connection to the server.'))
-          })
-          .catch(() => reject(new Error('Lost the connection to the server.')))
+      // Only when something actually changed: an unchanged snapshot would
+      // re-render the loading screen every poll for no reason.
+      const signature = `${snapshot.status}:${snapshot.stage}:${snapshot.progress}`
+      if (signature !== last) {
+        last = signature
+        onProgress(snapshot)
       }
-    })
+
+      if (snapshot.status === 'done') {
+        if (snapshot.result) return snapshot.result
+        throw new Error('The job finished without a city.')
+      }
+      if (snapshot.status === 'error') {
+        throw new Error(snapshot.error || 'Analysis failed.')
+      }
+      if (Date.now() - started > TIMEOUT) {
+        throw new Error('The analysis is taking longer than expected.')
+      }
+
+      await new Promise((r) => setTimeout(r, INTERVAL))
+    }
   },
 
   /**
