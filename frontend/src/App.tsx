@@ -53,9 +53,11 @@ export default function App() {
     setCacheKey(null)
     setView({ name: 'building', repoUrl })
     try {
-      const { jobId: id } = await api.analyze(repoUrl, force)
+      const { jobId: id, slug } = await api.analyze(repoUrl, force)
       setJobId(id)
-      const result = await api.followJob(id, setJob)
+      // The slug lets a job that outlives its server be recovered from the
+      // cache rather than reported as a failure. See `followJob`.
+      const result = await api.followJob(id, setJob, slug)
       setCity(result)
       setView({ name: 'city' })
     } catch (caught) {

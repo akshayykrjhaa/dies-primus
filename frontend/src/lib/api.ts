@@ -9,6 +9,18 @@ import type {
 
 const BASE = '/api'
 
+/** A failed request, carrying the status so callers can tell *how* it failed. */
+export class ApiError extends Error {
+  /** 0 when the request never reached the server at all. */
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let message = `Request failed (${response.status})`
@@ -18,7 +30,7 @@ async function json<T>(response: Response): Promise<T> {
     } catch {
       /* keep the generic message */
     }
-    throw new Error(message)
+    throw new ApiError(message, response.status)
   }
   return response.json() as Promise<T>
 }
@@ -68,53 +80,72 @@ export const api = {
    * a CDN in front of the API: an edge that buffers proxied responses -- and
    * Netlify's does, visibly, since the `Transfer-Encoding: chunked` the
    * backend sends never reaches the browser -- turns an incremental stream
-   * into a single response delivered at the end, and then drops the
-   * long-lived connection well before an analysis has finished.
+   * into a single response delivered at the end, then drops the long-lived
+   * connection well before a large analysis has finished.
    *
-   * The failure was worse than losing the progress text. The old code fell
-   * back to a *single* poll when the stream died, so a connection dropped at
-   * ten seconds into a thirty-second analysis found the job still running,
-   * gave up, and sent the visitor back to the landing page reporting a lost
-   * connection -- while the backend carried on and finished the city, which
-   * then appeared in the cache list as though nothing had happened.
+   * Everything here is about not giving up too early, because the cost of
+   * doing so is severe and silent: the analysis carries on to completion on
+   * the server whatever the browser decides, so an impatient client throws
+   * away a city that was about to arrive, and the visitor is told the
+   * connection died while the work quietly finishes without them.
    *
-   * Polling has none of that to go wrong: every request is short, ordinary,
-   * and cacheable-or-not on its own terms. The signature is unchanged, so
-   * `onProgress` still fires as the job moves through its stages -- just on
-   * a poll rather than on a push.
+   *  - A failed poll is not a failed analysis. It takes a *continuous* run of
+   *    failures lasting `PATIENCE` to count as lost -- long enough to sit out
+   *    a free-tier backend restarting, a sleeping laptop, or a tunnel.
+   *  - The gap between polls grows once it is clear this is a long job, so a
+   *    four-minute analysis costs a few dozen requests rather than hundreds,
+   *    and a rate limit has room to recover.
+   *  - A 404 means the job record itself is gone, which on a server that
+   *    keeps jobs in memory means it restarted. The city may still have been
+   *    finished and written to the cache before that, so it looks there
+   *    before admitting defeat.
    */
   async followJob(
     jobId: string,
     onProgress: (snapshot: JobSnapshot) => void,
+    /** The repo this job is for, so a lost job can be looked up in the cache. */
+    slug?: string,
   ): Promise<CityData> {
-    /** Fast enough to feel live, slow enough to be nothing on the network. */
-    const INTERVAL = 1500
-    /** A whole analysis, plus room for a sleeping free-tier backend to wake. */
-    const TIMEOUT = 10 * 60 * 1000
-    /**
-     * A poll may fail for reasons the job knows nothing about -- a dropped
-     * connection, a cold start, a blip at the edge. One failure is not a
-     * failed analysis, so it takes several in a row to give up. This is the
-     * exact impatience that made the old fallback report a working analysis
-     * as broken.
-     */
-    const MAX_MISSES = 5
+    /** While the early stages move quickly and the viewer is watching. */
+    const POLL_FAST = 1000
+    /** Once it is clearly a long analysis; stages then change every ~20s. */
+    const POLL_SLOW = 2500
+    const EASE_OFF_AFTER = 20_000
+    /** Continuous failure, not total failure, before the job is called lost. */
+    const PATIENCE = 120_000
+    /** A very large repository on a throttled free tier is genuinely slow. */
+    const TIMEOUT = 20 * 60 * 1000
 
     const started = Date.now()
-    let misses = 0
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    let failingSince: number | null = null
     let last = ''
 
     for (;;) {
-      let snapshot: JobSnapshot
+      let snapshot: JobSnapshot | null = null
       try {
         snapshot = await api.job(jobId)
-        misses = 0
+        failingSince = null
       } catch (error) {
-        misses += 1
-        if (misses >= MAX_MISSES) {
+        const status = error instanceof ApiError ? error.status : 0
+
+        // The job record is gone: this server no longer knows about it, and
+        // no amount of asking again will change that. If the analysis had
+        // already finished, the city is in the cache -- fetch it from there
+        // rather than reporting a failure for work that succeeded.
+        if (status === 404) {
+          const rescued = slug ? await api.findCached(slug).catch(() => null) : null
+          if (rescued) return rescued
+          throw new Error(
+            'The server restarted while building this city. Please try again.',
+          )
+        }
+
+        if (failingSince === null) failingSince = Date.now()
+        if (Date.now() - failingSince > PATIENCE) {
           throw new Error('Lost the connection to the server.')
         }
-        await new Promise((r) => setTimeout(r, INTERVAL))
+        await sleep(POLL_SLOW)
         continue
       }
 
@@ -137,8 +168,19 @@ export const api = {
         throw new Error('The analysis is taking longer than expected.')
       }
 
-      await new Promise((r) => setTimeout(r, INTERVAL))
+      await sleep(Date.now() - started > EASE_OFF_AFTER ? POLL_SLOW : POLL_FAST)
     }
+  },
+
+  /**
+   * The finished city for a repo, if some earlier run cached it.
+   *
+   * Used to rescue an analysis whose job record was lost -- see `followJob`.
+   */
+  async findCached(slug: string): Promise<CityData | null> {
+    const items = await api.recent()
+    const match = items.find((item) => item.slug === slug)
+    return match ? api.cached(match.cacheKey) : null
   },
 
   /**
